@@ -1,0 +1,233 @@
+'use server'
+
+import { auth } from '@/lib/auth'
+import { headers } from 'next/headers'
+import { db } from '@/lib/db'
+import { userRole, job, recruiterProfile, interview, candidateProfile, evaluation, user } from '@/lib/db/schema'
+import { eq, and, inArray } from 'drizzle-orm'
+
+/**
+ * Resolve the current user id from the Better Auth session.
+ * Every server action that touches user data MUST go through this helper
+ * — it is the only thing standing between one user and another's rows.
+ */
+async function getUserId() {
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session?.user) throw new Error('Unauthorized')
+  return session.user.id
+}
+
+/**
+ * Check if the current user is an admin
+ */
+export async function isAdmin(): Promise<boolean> {
+  try {
+    const userId = await getUserId()
+    const result = await db
+      .select({ role: userRole.role })
+      .from(userRole)
+      .where(eq(userRole.userId, userId))
+      .limit(1)
+    
+    return result.length > 0 && result[0].role === 'admin'
+  } catch (error) {
+    console.error('Failed to check admin role:', error)
+    return false
+  }
+}
+
+// Template — replace `items` and the field names with your own table.
+//
+// export async function getItems() {
+//   const userId = await getUserId()
+//   return db
+//     .select()
+//     .from(items)
+//     .where(eq(items.userId, userId))
+//     .orderBy(desc(items.createdAt))
+// }
+//
+// export async function createItem(title: string) {
+//   const userId = await getUserId()
+//   const trimmed = title.trim()
+//   if (!trimmed) return
+//   await db.insert(items).values({ userId, title: trimmed })
+//   revalidatePath("/")
+// }
+//
+// export async function updateItem(id: number, fields: { completed?: boolean }) {
+//   const userId = await getUserId()
+//   await db
+//     .update(items)
+//     .set(fields)
+//     .where(and(eq(items.id, id), eq(items.userId, userId)))
+//   revalidatePath("/")
+// }
+//
+// export async function deleteItem(id: number) {
+//   const userId = await getUserId()
+//   await db
+//     .delete(items)
+//     .where(and(eq(items.id, id), eq(items.userId, userId)))
+//   revalidatePath("/")
+// }
+
+export {}
+
+/**
+ * Get jobs for the current recruiter
+ */
+export async function getRecruiterJobs() {
+  try {
+    const userId = await getUserId()
+    const jobsResult = await db
+      .select({
+        id: job.id,
+        title: job.title,
+        organizationName: recruiterProfile.organizationName
+      })
+      .from(job)
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .where(eq(recruiterProfile.userId, userId))
+
+    return jobsResult
+  } catch (error) {
+    console.error('Failed to get recruiter jobs:', error)
+    return []
+  }
+}
+
+/**
+ * Get completed interviews for the current recruiter's jobs
+ */
+export async function getCompletedInterviews() {
+  try {
+    const userId = await getUserId()
+    
+    // First get the recruiter's job IDs
+    const jobsResult = await db
+      .select({ id: job.id })
+      .from(job)
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .where(eq(recruiterProfile.userId, userId))
+    
+    const jobIds = jobsResult.map(job => job.id)
+    
+    if (jobIds.length === 0) {
+      return []
+    }
+
+    // Fetch completed interviews (completed, missed, rescheduled) for these jobs
+    const completedResult = await db
+      .select({
+        interviewId: interview.id,
+        candidateName: candidateProfile.fullName,
+        jobTitle: job.title,
+        company: recruiterProfile.organizationName,
+        scheduledAt: interview.scheduledAt,
+        status: interview.status,
+        riskScore: interview.riskScore,
+        evaluationScore: evaluation.score,
+        evaluationFeedback: evaluation.feedback
+      })
+      .from(interview)
+      .innerJoin(candidateProfile, eq(interview.userId, candidateProfile.userId))
+      .innerJoin(user, eq(candidateProfile.userId, user.id))
+      .innerJoin(pipeline, eq(interview.pipelineId, pipeline.id))
+      .innerJoin(job, eq(pipeline.jobId, job.id))
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .leftJoin(evaluation, eq(evaluation.interviewId, interview.id))
+      .where(and(
+        inArray(pipeline.jobId, jobIds),
+        or(
+          eq(interview.status, 'completed'),
+          eq(interview.status, 'missed'),
+          eq(interview.status, 'rescheduled')
+        )
+      ))
+      .orderBy(interview.scheduledAt)
+
+    return completedResult.map(row => {
+      const humanReviewRequired =
+        (row.riskScore !== null && row.riskScore >= 80) ||
+        (row.evaluationScore !== null && row.riskScore !== null && Math.abs(row.riskScore - row.evaluationScore) > 30) ||
+        (row.evaluationFeedback !== null && typeof row.evaluationFeedback === 'string' && row.evaluationFeedback.toLowerCase().includes('needs human review'));
+
+      return {
+        id: row.interviewId,
+        candidateName: row.candidateName,
+        jobTitle: row.jobTitle,
+        company: row.company,
+        scheduledAt: row.scheduledAt,
+        status: row.status,
+        riskScore: row.riskScore,
+        interviewScore: row.evaluationScore,
+        humanReviewRequired
+      };
+    })
+  } catch (error) {
+    console.error('Failed to get completed interviews:', error)
+    return []
+  }
+}
+
+/**
+ * Get shortlist candidates for the current recruiter's jobs
+ */
+export async function getShortlistCandidates() {
+  try {
+    const userId = await getUserId()
+    
+    // First get the recruiter's job IDs
+    const jobsResult = await db
+      .select({ id: job.id })
+      .from(job)
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .where(eq(recruiterProfile.userId, userId))
+    
+    const jobIds = jobsResult.map(job => job.id)
+    
+    if (jobIds.length === 0) {
+      return []
+    }
+
+    // Fetch shortlist (pipeline stage = 'shortlist') for these jobs
+    const shortlistResult = await db
+      .select({
+        candidateId: candidateProfile.id,
+        candidateName: candidateProfile.fullName,
+        jobTitle: job.title,
+        jobId: job.id,
+        interviewId: pipeline.interviewId,
+        scheduledAt: interview.scheduledAt,
+        riskScore: interview.riskScore,
+        interviewScore: evaluation.score
+      })
+      .from(pipeline)
+      .innerJoin(candidateProfile, eq(pipeline.candidateId, candidateProfile.id))
+      .innerJoin(job, eq(pipeline.jobId, job.id))
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .leftJoin(interview, eq(pipeline.interviewId, interview.id))
+      .leftJoin(evaluation, eq(evaluation.interviewId, interview.id))
+      .where(and(
+        inArray(pipeline.jobId, jobIds),
+        eq(pipeline.stage, 'shortlist')
+      ))
+      .orderBy(pipeline.updatedAt)
+
+    return shortlistResult.map(row => ({
+      candidateId: row.candidateId,
+      candidateName: row.candidateName,
+      jobTitle: row.jobTitle,
+      company: row.company,
+      jobId: row.jobId,
+      interviewId: row.interviewId,
+      scheduledAt: row.scheduledAt,
+      riskScore: row.riskScore,
+      interviewScore: row.interviewScore
+    }))
+  } catch (error) {
+    console.error('Failed to get shortlist candidates:', error)
+    return []
+  }
+}

@@ -1,0 +1,1315 @@
+'use client'
+
+import { useState, useEffect, useRef } from 'react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { AlertCircle, Mic, MicOff, Video, VideoOff, PhoneOff, Eye, Smile, AlertTriangle } from 'lucide-react'
+import { FrameSampler } from '@/lib/frame-sampler'
+import { FaceDetector } from '@/lib/cv/face-detector'
+import { ObjectDetector } from '@/lib/cv/object-detector'
+import { GazeHeadPoseEstimator, GazeEstimate, HeadPose, GazeHeadPoseResult } from '@/lib/cv/gaze-headpose'
+import { PoseDetector, PoseResult } from '@/lib/cv/pose-detector'
+import { LightingAnalyzer } from '@/lib/cv/lighting-analyzer'
+import { LivenessAnalyzer } from '@/lib/cv/liveness-analyzer'
+import { calculateRiskScore, ProctoringEvent, RiskOutput } from '@/lib/cv/risk-engine'
+import { useRollingVideoBuffer } from '@/lib/rolling-buffer'
+
+// Debug flag to show detailed computer vision status (set to false for production candidate view)
+const DEBUG_CV = false
+
+type BehavioralSignal = {
+  type: 'attention' | 'engagement' | 'confidence' | 'concern'
+  label: string
+  value: number
+  timestamp: number
+}
+
+type CVStatus = {
+  faceDetected: boolean
+  faceCount: number
+  objects: string[] // labels of detected objects
+}
+
+type GazeHeadPoseStatus = {
+  gaze: GazeEstimate | null
+  headPose: HeadPose | null
+}
+
+type PoseStatus = {
+  poseScore: number | null
+  personPresent: boolean | null
+  shouldersVisible: boolean | null
+}
+
+type BaselineData = {
+  gazeCenter: { x: number; y: number } | null
+  gazeRange: { xMin: number; xMax: number; yMin: number; yMax: number } | null
+  headPoseRange: { pitchMin: number; pitchMax: number; yawMin: number; yawMax: number; rollMin: number; rollMax: number } | null
+  poseScoreRange: { min: number; max: number } | null
+  gazeSamplesCollected: number
+  poseSamplesCollected: number
+  gazeBaselineReady: boolean
+  poseBaselineReady: boolean
+}
+
+export default function LiveInterviewRoom({
+  jobTitle,
+  candidateName,
+  onComplete,
+}: {
+  jobTitle: string
+  candidateName: string
+  onComplete: () => void
+}) {
+  const [isRecording, setIsRecording] = useState(false)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isVideoOff, setIsVideoOff] = useState(false)
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [signals, setSignals] = useState<BehavioralSignal[]>([])
+  const [cvStatus, setCVStatus] = useState<CVStatus>({
+    faceDetected: false,
+    faceCount: 0,
+    objects: []
+  })
+  const [gazeHeadPoseStatus, setGazeHeadPoseStatus] = useState<GazeHeadPoseStatus>({
+    gaze: null,
+    headPose: null
+  })
+  const [poseStatus, setPoseStatus] = useState<PoseStatus>({
+    poseScore: null,
+    personPresent: null,
+    shouldersVisible: null
+  })
+  const [baselineData, setBaselineData] = useState<BaselineData>({
+    gazeCenter: null,
+    gazeRange: null,
+    headPoseRange: null,
+    poseScoreRange: null,
+    gazeSamplesCollected: 0,
+    poseSamplesCollected: 0,
+    gazeBaselineReady: false,
+    poseBaselineReady: false
+  })
+  const [isBaselineComplete, setIsBaselineComplete] = useState(false)
+  const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const recordingStartRef = useRef<number>(0)
+  const frameSamplerRef = useRef<FrameSampler | null>(null)
+  const faceDetectorRef = useRef<FaceDetector | null>(null)
+  const objectDetectorRef = useRef<ObjectDetector | null>(null)
+  const gazeHeadPoseEstimatorRef = useRef<GazeHeadPoseEstimator | null>(null)
+  const poseDetectorRef = useRef<PoseDetector | null>(null)
+  const lightingAnalyzerRef = useRef<LightingAnalyzer | null>(null)
+  const sessionIdRef = useRef<string | null>(null)
+  const lastEmitRef = useRef<Map<string, number>>(new Map())
+  // Sliding window for gaze and head pose samples (last 15 seconds)
+  const gazeSamplesRef = useRef<Array<{gaze: GazeEstimate; headPose: HeadPose; timestamp: number}>>([])
+  const headPoseSamplesRef = useRef<Array<{gaze: GazeEstimate; headPose: HeadPose; timestamp: number}>>([])
+  const poseSamplesRef = useRef<Array<{poseScore: number; personPresent: boolean; shouldersVisible: boolean; timestamp: number}>>([])
+  // Ref for recent events (last 5 minutes) for risk engine
+  const recentEventsRef = useRef<ProctoringEvent[]>([])
+  // Ref for risk score history (last 20 scores)
+  const riskScoresRef = useRef<RiskOutput[]>([])
+  // Ref for media stream
+  const streamRef = useRef<MediaStream | null>(null)
+  // Ref for previous lighting values to detect sudden changes
+  const prevLightingRef = useRef<{
+    brightness: number;
+    contrast: number;
+    timestamp: number;
+  } | null>(null)
+  // Ref for liveness analyzer
+  const livenessAnalyzerRef = useRef<LivenessAnalyzer | null>(null)
+
+  // Hook for rolling video buffer
+  const { getClip, takeSnapshot } = useRollingVideoBuffer(videoElement, { secondsToBuffer: 25 })
+
+  // Determine if we should clip for a given event
+  const shouldClipEvent = (eventType: string, severity: 'low' | 'medium' | 'high'): boolean => {
+    // Always clip for high severity events
+    if (severity === 'high') return true
+    // Clip for specific event types regardless of severity
+    const clipWorthyTypes = new Set([
+      'phone_detected',
+      'multiple_faces',
+      'face_left_frame',
+      'person_absent_from_frame',
+      'spoofSuspected', // if we had it
+      // Add more as needed
+    ])
+    return clipWorthyTypes.has(eventType)
+  }
+
+  // Upload media (clip and snapshot) for a given event
+  const uploadMediaForEvent = async (eventId: number, clipBlob: Blob, snapshotBlob: Blob) => {
+    try {
+      const formData = new FormData()
+      formData.append('event_id', eventId.toString())
+      formData.append('clip', clipBlob, 'clip.webm')
+      formData.append('snapshot', snapshotBlob, 'snapshot.jpg')
+
+      await fetch('/api/proctoring/media/upload', {
+        method: 'POST',
+        body: formData,
+        // Note: don't set Content-Type header, let browser set it for multipart
+      })
+    } catch (err) {
+      console.error('Failed to upload media for event', err)
+    }
+  }
+
+  // Handle event emission with optional media upload
+  const handleEventEmission = async (event: {
+    type: string;
+    severity: 'low' | 'medium' | 'high';
+    metadata: Record<string, any>;
+  }) => {
+    const eventId = await fetchEvent(event)
+    if (eventId !== null && shouldClipEvent(event.type, event.severity)) {
+      // Get clip and snapshot
+      const clipBlob = getClip(15) // last 15 seconds
+      const snapshotBlob = await takeSnapshot() // note: takeSnapshot returns a Promise<Blob|null>
+      // Only upload if we have both a clip with data and a snapshot
+      if (clipBlob.size > 0 && snapshotBlob) {
+        // Upload media
+        await uploadMediaForEvent(eventId, clipBlob, snapshotBlob)
+      }
+    }
+  }
+
+  const BASELINE_DURATION_MS = 50000 // 50 seconds for baseline (can be 45-60s, we'll use 50s for simplicity)
+  const BASELINE_SAMPLES_REQUIRED = 40 // we'll collect samples at 1fps, so 50 seconds -> 50 samples, but we'll require at least 40
+  const PATTERN_WINDOW_SIZE = 15 // 15 seconds for pattern detection
+  const DEBOUNCE_MS = 5000 // 5 seconds debounce for same event type
+
+  useEffect(() => {
+    if (!isRecording) return
+
+    recordingStartRef.current = Date.now() - elapsedSeconds * 1000
+    const timer = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1)
+
+      // Simulate behavioral signal sampling every 5 seconds
+      if (elapsedSeconds % 5 === 0) {
+        const signalTypes: Array<'attention' | 'engagement' | 'confidence' | 'concern'> = [
+          'attention',
+          'engagement',
+          'confidence',
+        ]
+        const randomSignal = signalTypes[Math.floor(Math.random() * signalTypes.length)]
+        const value = 50 + Math.random() * 50 // 50-100
+
+        setSignals((prev) => [
+          ...prev,
+          {
+            type: randomSignal,
+            label: randomSignal.charAt(0).toUpperCase() + randomSignal.slice(1),
+            value,
+            timestamp: Date.now(),
+          },
+        ])
+      }
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [isRecording, elapsedSeconds])
+
+  useEffect(() => {
+    if (isRecording) {
+      // Request video stream
+      (async () => {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false
+          });
+          streamRef.current = stream;
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            setVideoElement(videoRef.current);
+          }
+        } catch (err) {
+          console.error('Failed to get video stream', err);
+          alert('Failed to access camera. Please check your camera permissions.');
+          setVideoElement(null);
+        }
+      })();
+    } else {
+      // Stop stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+      setVideoElement(null);
+    }
+  }, [isRecording])
+
+  // Watch for baseline completion - set isBaselineComplete when both gaze and pose baselines are ready
+  useEffect(() => {
+    if (!isRecording) return
+
+    const baselineDataCopy = baselineData
+    if (baselineDataCopy.gazeBaselineReady && baselineDataCopy.poseBaselineReady && !isBaselineComplete) {
+      setIsBaselineComplete(true)
+
+      // Send baseline to backend with available data
+      // Note: We send whatever baseline data we have available at this point
+      // One modality might have more recent data than the other, but that's okay
+      const baselineSendData = {
+        gazeCenter: baselineDataCopy.gazeCenter,
+        gazeRange: baselineDataCopy.gazeRange,
+        headPoseRange: baselineDataCopy.headPoseRange,
+        poseScoreRange: baselineDataCopy.poseScoreRange,
+        samplesCollected: Math.max(baselineDataCopy.gazeSamplesCollected, baselineDataCopy.poseSamplesCollected)
+      }
+
+      // Only send if we have at least some data
+      if (baselineSendData.gazeCenter || baselineSendData.headPoseRange || baselineSendData.poseScoreRange) {
+        handleEventEmission({
+          type: 'baseline_learned',
+          severity: 'low', // baseline is not a concern
+          metadata: baselineSendData
+        }).catch(err => {
+          console.error('Failed to send baseline event:', err)
+        })
+      }
+    }
+  }, [baselineData, isBaselineComplete, isRecording])
+
+  const startInterview = async () => {
+    try {
+      // Initialize detectors
+      const faceDetector = new FaceDetector()
+      await faceDetector.initialize()
+      faceDetectorRef.current = faceDetector
+
+      const objectDetector = new ObjectDetector()
+      await objectDetector.initialize()
+      objectDetectorRef.current = objectDetector
+
+      const gazeHeadPoseEstimator = new GazeHeadPoseEstimator()
+      await gazeHeadPoseEstimator.initialize()
+      gazeHeadPoseEstimatorRef.current = gazeHeadPoseEstimator
+
+      const poseDetector = new PoseDetector()
+      await poseDetector.initialize()
+      poseDetectorRef.current = poseDetector
+
+      const lightingAnalyzer = new LightingAnalyzer()
+      await lightingAnalyzer.initialize()
+      lightingAnalyzerRef.current = lightingAnalyzer
+
+      const livenessAnalyzer = new LivenessAnalyzer()
+      await livenessAnalyzer.initialize()
+      livenessAnalyzerRef.current = livenessAnalyzer
+
+      // Generate a session ID
+      sessionIdRef.current = crypto.randomUUID()
+
+      // Set up frame sampler
+      const frameSampler = new FrameSampler(async (canvas) => {
+        if (videoRef.current && videoRef.current.srcObject) {
+          // Run face detection
+          const faceResult = await faceDetectorRef.current?.detect(canvas)
+          // Run object detection
+          const objects = await objectDetectorRef.current?.detect(canvas)
+          // Run gaze and head pose estimation
+          const gazeHeadPoseResult = await gazeHeadPoseEstimatorRef.current?.detect(canvas)
+          // Run pose detection
+          const poseResult = await poseDetectorRef.current?.detect(canvas)
+          // Run lighting analysis
+          const lightingResult = await lightingAnalyzerRef.current?.analyze(videoRef.current!)
+          // Run liveness analysis
+          const livenessResult = await livenessAnalyzerRef.current?.analyze(videoRef.current!, gazeHeadPoseResult?.landmarks)
+
+          // Update CV status
+          const newCVStatus = {
+            faceDetected: (faceResult?.faceCount ?? 0) > 0,
+            faceCount: faceResult?.faceCount ?? 0,
+            objects: objects?.map((obj: any) => obj.label) ?? []
+          }
+          setCVStatus(newCVStatus)
+          setGazeHeadPoseStatus({
+            gaze: gazeHeadPoseResult?.gaze ?? null,
+            headPose: gazeHeadPoseResult?.headPose ?? null
+          })
+          setPoseStatus({
+            poseScore: poseResult?.poseScore ?? null,
+            personPresent: poseResult?.personPresent ?? null,
+            shouldersVisible: poseResult?.shouldersVisible ?? null
+          })
+
+          // Process gaze and head pose for baseline learning and pattern detection
+          await processGazeHeadPose(gazeHeadPoseResult, Date.now())
+          // Process pose for baseline learning and pattern detection
+          await processPose(poseResult, Date.now())
+
+          // Emit events based on CV status (object/face detection)
+          await emitCVEvents(newCVStatus)
+
+          // Emit lighting events if significant changes detected
+          await emitLightingEvents(lightingResult)
+          // Emit liveness events if spoofing detected or liveness failed
+          await emitLivenessEvents(livenessResult)
+
+          // Calculate and send risk score with lighting and liveness data
+          await calculateAndSendRiskScore(
+            newCVStatus,
+            gazeHeadPoseResult,
+            poseResult,
+            lightingResult,
+            livenessResult
+          )
+        }
+      })
+      frameSamplerRef.current = frameSampler
+      if (videoRef.current) {
+        frameSampler.start(videoRef.current);
+      }
+
+      setIsRecording(true)
+      setElapsedSeconds(0)
+      setSignals([])
+      // Reset baseline and samples
+      setBaselineData({
+        gazeCenter: null,
+        gazeRange: null,
+        headPoseRange: null,
+        poseScoreRange: null,
+        gazeSamplesCollected: 0,
+        poseSamplesCollected: 0,
+        gazeBaselineReady: false,
+        poseBaselineReady: false
+      })
+      setIsBaselineComplete(false)
+      gazeSamplesRef.current = []
+      headPoseSamplesRef.current = []
+      poseSamplesRef.current = []
+      poseSamplesRef.current = []
+    } catch (err) {
+      console.error('Failed to initialize detectors', err)
+      alert('Failed to initialize computer vision models. Please check console.')
+    }
+  }
+
+  const processGazeHeadPose = async (result: GazeHeadPoseResult | undefined, timestamp: number) => {
+    if (!result) return
+
+    const { gaze, headPose } = result
+    if (!gaze || !headPose) return
+
+    // Add to sliding window
+    gazeSamplesRef.current.push({ gaze, headPose, timestamp })
+    headPoseSamplesRef.current.push({ gaze, headPose, timestamp })
+
+    // Remove samples older than PATTERN_WINDOW_SIZE seconds
+    const cutoff = timestamp - PATTERN_WINDOW_SIZE * 1000
+    gazeSamplesRef.current = gazeSamplesRef.current.filter(sample => sample.timestamp >= cutoff)
+    headPoseSamplesRef.current = headPoseSamplesRef.current.filter(sample => sample.timestamp >= cutoff)
+
+    // If we are still in baseline period, collect samples
+    if (elapsedSeconds * 1000 < BASELINE_DURATION_MS) {
+      // Just collect samples, we'll compute baseline after the period
+      return
+    }
+
+    // If baseline is not yet computed, compute it now
+    if (!isBaselineComplete && gazeSamplesRef.current.length >= BASELINE_SAMPLES_REQUIRED) {
+      // Compute baseline from the collected samples (we'll use all samples collected so far)
+      const gazeSamples = gazeSamplesRef.current.map(s => s.gaze)
+      const headPoseSamples = headPoseSamplesRef.current.map(s => s.headPose)
+
+      // Compute average gaze
+      const avgGazeX = gazeSamples.reduce((sum, s) => sum + s.x, 0) / gazeSamples.length
+      const avgGazeY = gazeSamples.reduce((sum, s) => sum + s.y, 0) / gazeSamples.length
+
+      // Compute gaze range (min/max)
+      const gazeXValues = gazeSamples.map(s => s.x)
+      const gazeYValues = gazeSamples.map(s => s.y)
+      const gazeRange = {
+        xMin: Math.min(...gazeXValues),
+        xMax: Math.max(...gazeXValues),
+        yMin: Math.min(...gazeYValues),
+        yMax: Math.max(...gazeYValues)
+      }
+
+      // Compute head pose range
+      const pitchValues = headPoseSamples.map(s => s.pitch)
+      const yawValues = headPoseSamples.map(s => s.yaw)
+      const rollValues = headPoseSamples.map(s => s.roll)
+      const headPoseRange = {
+        pitchMin: Math.min(...pitchValues),
+        pitchMax: Math.max(...pitchValues),
+        yawMin: Math.min(...yawValues),
+        yawMax: Math.max(...yawValues),
+        rollMin: Math.min(...rollValues),
+        rollMax: Math.max(...rollValues)
+      }
+
+      setBaselineData(prev => ({
+        ...prev,
+        gazeCenter: { x: avgGazeX, y: avgGazeY },
+        gazeRange,
+        headPoseRange,
+        gazeSamplesCollected: gazeSamples.length,
+        gazeBaselineReady: true
+      }))
+
+      // Send baseline to backend
+      await handleEventEmission({
+        type: 'baseline_learned',
+        severity: 'low', // baseline is not a concern
+        metadata: {
+          gazeCenter: { x: avgGazeX, y: avgGazeY },
+          gazeRange,
+          headPoseRange,
+          samplesCollected: gazeSamples.length
+        }
+      })
+    }
+
+    // If baseline is complete, check for patterns
+    if (isBaselineComplete && baselineData.gazeCenter && baselineData.gazeRange && baselineData.headPoseRange) {
+      await checkForPattern(gaze, headPose)
+    }
+  }
+
+  const checkForPattern = async (currentGaze: GazeEstimate, currentHeadPose: HeadPose) => {
+    const now = Date.now()
+    const canEmit = (eventType: string): boolean => {
+      const lastEmit = lastEmitRef.current.get(eventType) ?? 0
+      if (now - lastEmit > DEBOUNCE_MS) {
+        lastEmitRef.current.set(eventType, now)
+        return true
+      }
+      return false
+    }
+
+    const activePatterns = getActiveGazeHeadPosePatterns(currentGaze, currentHeadPose)
+    for (const pattern of activePatterns) {
+      if (canEmit(pattern)) {
+        // We need to emit an event for this pattern. We'll reuse the metadata from the helper?
+        // For simplicity, we'll emit without metadata for now, or we can compute metadata similarly.
+        // But the existing fetchEvent expects metadata. Let's compute minimal metadata.
+        // We'll create a metadata object with the pattern name and maybe the current values.
+        // However, to avoid duplicating logic, we'll just emit an event with basic info.
+        // The risk engine will use the currentSignals, not the event metadata.
+        // So we can emit an event with empty metadata.
+        await handleEventEmission({
+          type: pattern,
+          severity: 'medium', // default, we can adjust per pattern later if needed
+          metadata: {}
+        })
+      }
+    }
+  }
+
+  const emitCVEvents = async (status: CVStatus) => {
+    if (!sessionIdRef.current) return
+
+    const now = Date.now()
+    const canEmit = (eventType: string): boolean => {
+      const lastEmit = lastEmitRef.current.get(eventType) ?? 0
+      if (now - lastEmit > DEBOUNCE_MS) {
+        lastEmitRef.current.set(eventType, now)
+        return true
+      }
+      return false
+    }
+
+    // Phone detected
+    const phoneCount = status.objects.filter((obj: string) =>
+      ['cell phone', 'phone', 'mobile phone'].includes(obj.toLowerCase())
+    ).length
+    if (phoneCount > 0 && canEmit('phone_detected')) {
+      await handleEventEmission({
+        type: 'phone_detected',
+        severity: 'high',
+        metadata: { count: phoneCount }
+      })
+    }
+
+    // Face left frame
+    if (status.faceCount === 0 && canEmit('face_left_frame')) {
+      await handleEventEmission({
+        type: 'face_left_frame',
+        severity: 'medium',
+        metadata: { count: 0 }
+      })
+    }
+
+    // Multiple faces
+    if (status.faceCount > 1 && canEmit('multiple_faces')) {
+      await handleEventEmission({
+        type: 'multiple_faces',
+        severity: 'high',
+        metadata: { count: status.faceCount }
+      })
+    }
+
+    // Extra person (more than one person)
+    const personCount = status.objects.filter((obj: string) =>
+      ['person'].includes(obj.toLowerCase())
+    ).length
+    if (personCount > 1 && canEmit('extra_person')) {
+      await handleEventEmission({
+        type: 'extra_person',
+        severity: 'high',
+        metadata: { count: personCount }
+      })
+    }
+  }
+
+  const fetchEvent = async (event: {
+    type: string;
+    severity: 'low' | 'medium' | 'high';
+    metadata: Record<string, any>;
+  }): Promise<number | null> => {
+    if (!sessionIdRef.current) return null
+    try {
+      const response = await fetch('/api/proctoring/events', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          event_type: event.type,
+          severity: event.severity,
+          timestamp: new Date().toISOString(),
+          metadata: event.metadata,
+        }),
+      })
+      const data = await response.json()
+      const eventId = data.event_id
+      // Store event locally for risk engine (keep last 5 minutes)
+      const eventWithTimestamp: ProctoringEvent = {
+        type: event.type,
+        severity: event.severity,
+        metadata: event.metadata,
+        timestamp: new Date().toISOString()
+      }
+      recentEventsRef.current = [
+        ...recentEventsRef.current,
+        eventWithTimestamp
+      ].filter(ev => {
+        const eventTime = new Date(ev.timestamp).getTime()
+        const now = Date.now()
+        return now - eventTime < 5 * 60 * 1000 // 5 minutes
+      })
+      return eventId
+    } catch (err) {
+      console.error('Failed to emit event', err)
+      return null
+    }
+  }
+
+  // Returns an array of pattern types that are currently active for gaze and head pose
+  const getActiveGazeHeadPosePatterns = (currentGaze: GazeEstimate, currentHeadPose: HeadPose): string[] => {
+    const activePatterns: string[] = []
+
+    // Pattern 1: repeated off-screen gaze (looking away many times in the window)
+    if (gazeSamplesRef.current.length >= 10) {
+      const offScreenCount = gazeSamplesRef.current.filter(sample =>
+        !sample.gaze.lookingAtScreen
+      ).length
+      const offScreenRatio = offScreenCount / gazeSamplesRef.current.length
+      if (offScreenRatio > 0.6) { // more than 60% off-screen
+        activePatterns.push('repeated_off_screen_gaze')
+      }
+    }
+
+    // Pattern 2: long downward gaze (> 3 seconds looking down)
+    // We'll check if in the last 3 seconds (3 samples) the gaze has been consistently downward
+    const threeSecAgo = Date.now() - 3000
+    const recentSamples = gazeSamplesRef.current.filter(sample => sample.timestamp >= threeSecAgo)
+    if (recentSamples.length >= 3) {
+      const downwardSamples = recentSamples.filter(sample =>
+        sample.gaze.y > 0.5 // looking down (positive y is down in our coordinate system?)
+      )
+      if (downwardSamples.length === recentSamples.length) {
+        activePatterns.push('long_downward_gaze')
+      }
+    }
+
+    // Pattern 3: frequent side turns (high yaw variation)
+    if (headPoseSamplesRef.current.length >= 10) {
+      const yawValues = headPoseSamplesRef.current.map(sample => sample.headPose.yaw)
+      const yawRange = Math.max(...yawValues) - Math.min(...yawValues)
+      if (yawRange > 30) { // yaw variation more than 30 degrees
+        activePatterns.push('frequent_side_turns')
+      }
+    }
+
+    // Pattern 4: looking behind (extreme yaw)
+    if (headPoseSamplesRef.current.length >= 5) {
+      const recentYaw = headPoseSamplesRef.current.slice(-5).map(sample => sample.headPose.yaw)
+      const avgYaw = recentYaw.reduce((sum, val) => sum + val, 0) / recentYaw.length
+      if (Math.abs(avgYaw) > 40) { // looking more than 40 degrees to side
+        activePatterns.push('looking_behind')
+      }
+    }
+
+    // Pattern 5: gaze deviation from baseline (if gaze is consistently outside baseline range)
+    if (gazeSamplesRef.current.length >= 10 && isBaselineComplete && baselineData.gazeCenter && baselineData.gazeRange) {
+      const gazeOutsideCount = gazeSamplesRef.current.filter(sample =>
+        sample.gaze.x < baselineData.gazeRange!.xMin ||
+        sample.gaze.x > baselineData.gazeRange!.xMax ||
+        sample.gaze.y < baselineData.gazeRange!.yMin ||
+        sample.gaze.y > baselineData.gazeRange!.yMax
+      ).length
+      const outsideRatio = gazeOutsideCount / gazeSamplesRef.current.length
+      if (outsideRatio > 0.5) {
+        activePatterns.push('gaze_deviation_from_baseline')
+      }
+    }
+
+    return activePatterns
+  }
+
+  // Returns an array of pattern types that are currently active for pose
+  const getActivePosePatterns = (currentPoseScore: number, currentPersonPresent: boolean, currentShouldersVisible: boolean): string[] => {
+    const activePatterns: string[] = []
+
+    // Pattern 1: person absent from frame (no person detected for extended period)
+    // Check if in the last 3 seconds (3 samples) no person has been detected
+    const threeSecAgo = Date.now() - 3000
+    const recentPoseSamples = poseSamplesRef.current.filter(sample => sample.timestamp >= threeSecAgo)
+    if (recentPoseSamples.length >= 3) {
+      const personAbsentCount = recentPoseSamples.filter(sample => !sample.personPresent).length
+      const personAbsentRatio = personAbsentCount / recentPoseSamples.length
+      if (personAbsentRatio > 0.8) { // more than 80% of samples show no person
+        activePatterns.push('person_absent_from_frame')
+      }
+    }
+
+    // Pattern 2: slouching posture (consistently low pose score indicating poor posture)
+    if (poseSamplesRef.current.length >= 10) {
+      const recentPoseScores = poseSamplesRef.current.slice(-10).map(sample => sample.poseScore)
+      const avgRecentPoseScore = recentPoseScores.reduce((sum, s) => sum + s, 0) / recentPoseScores.length
+      // If recent pose score is significantly below baseline minimum, it's slouching
+      if (baselineData.poseScoreRange && avgRecentPoseScore < baselineData.poseScoreRange.min - 20) {
+        activePatterns.push('slouching_posture')
+      }
+    }
+
+    // Pattern 3: leaning to one side (asymmetric shoulder visibility or pose)
+    // We'll detect this by checking if shoulders are inconsistent in visibility over time
+    if (poseSamplesRef.current.length >= 10) {
+      const recentShouldersVisible = poseSamplesRef.current.slice(-10).map(sample => sample.shouldersVisible)
+      const shouldersVisibleCount = recentShouldersVisible.filter(visible => visible).length
+      const shouldersVisibleRatio = shouldersVisibleCount / recentShouldersVisible.length
+      // If shoulders are inconsistently visible (some visible, some not), it might indicate leaning
+      if (shouldersVisibleRatio > 0.2 && shouldersVisibleRatio < 0.8) { // 20-80% visibility suggests inconsistency
+        activePatterns.push('leaning_posture')
+      }
+    }
+
+    // Pattern 4: shoulders not visible (person turned away or left frame)
+    if (poseSamplesRef.current.length >= 5) {
+      const recentShouldersVisible = poseSamplesRef.current.slice(-5).map(sample => sample.shouldersVisible)
+      const allShouldersNotVisible = recentShouldersVisible.every(visible => !visible)
+      if (allShouldersNotVisible) {
+        activePatterns.push('shoulders_not_visible')
+      }
+    }
+
+    return activePatterns
+  }
+
+  const processPose = async (result: PoseResult | undefined, timestamp: number) => {
+    if (!result) return
+
+    const { poseScore, personPresent, shouldersVisible } = result
+    if (poseScore === null || personPresent === null || shouldersVisible === null) return
+
+    // Add to sliding window
+    poseSamplesRef.current.push({ poseScore, personPresent, shouldersVisible, timestamp })
+
+    // Remove samples older than PATTERN_WINDOW_SIZE seconds
+    const cutoff = timestamp - PATTERN_WINDOW_SIZE * 1000
+    poseSamplesRef.current = poseSamplesRef.current.filter(sample => sample.timestamp >= cutoff)
+
+    // If we are still in baseline period, collect samples
+    if (elapsedSeconds * 1000 < BASELINE_DURATION_MS) {
+      // Just collect samples, we'll compute baseline after the period
+      return
+    }
+
+    // If baseline is not yet computed, compute it now
+    if (!isBaselineComplete && poseSamplesRef.current.length >= BASELINE_SAMPLES_REQUIRED) {
+      // Compute baseline from the collected samples (we'll use all samples collected so far)
+      const poseScores = poseSamplesRef.current.map(s => s.poseScore)
+
+      // Compute average pose score
+      const avgPoseScore = poseScores.reduce((sum, s) => sum + s, 0) / poseScores.length
+
+      // Compute pose score range (min/max)
+      const poseScoreRange = {
+        min: Math.min(...poseScores),
+        max: Math.max(...poseScores)
+      }
+
+      setBaselineData(prev => ({
+        ...prev,
+        poseScoreRange,
+        poseSamplesCollected: poseScores.length,
+        poseBaselineReady: true
+      }))
+
+      // Send baseline to backend
+      await handleEventEmission({
+        type: 'baseline_learned',
+        severity: 'low', // baseline is not a concern
+        metadata: {
+          poseScoreRange,
+          samplesCollected: poseScores.length
+        }
+      })
+    }
+
+    // If baseline is complete, check for patterns
+    if (isBaselineComplete && baselineData.poseScoreRange) {
+      await checkForPosePattern(poseScore, personPresent, shouldersVisible)
+    }
+  }
+
+  const checkForPosePattern = async (currentPoseScore: number, currentPersonPresent: boolean, currentShouldersVisible: boolean) => {
+    const now = Date.now()
+    const canEmit = (eventType: string): boolean => {
+      const lastEmit = lastEmitRef.current.get(eventType) ?? 0
+      if (now - lastEmit > DEBOUNCE_MS) {
+        lastEmitRef.current.set(eventType, now)
+        return true
+      }
+      return false
+    }
+
+    const activePatterns = getActivePosePatterns(currentPoseScore, currentPersonPresent, currentShouldersVisible)
+    for (const pattern of activePatterns) {
+      if (canEmit(pattern)) {
+        // Emit event with minimal metadata (risk engine uses currentSignals, not event metadata)
+        await handleEventEmission({
+          type: pattern,
+          severity: 'medium', // default, we can adjust per pattern later if needed
+          metadata: {}
+        })
+      }
+    }
+  }
+
+  // Calculate risk score from current detections and recent events, then send to backend
+  const calculateAndSendRiskScore = async (
+    cvStatus: CVStatus,
+    gazeHeadPoseResult: GazeHeadPoseResult | undefined,
+    poseResult: PoseResult | undefined,
+    lightingResult?: {
+      brightness: number;
+      contrast: number;
+      uniformity: number;
+      darkLighting: boolean;
+      goodLighting: boolean;
+    },
+    livenessResult?: {
+      eyeAspectRatio: number;
+      blinkRate: number;
+      headMovementScore: number;
+      textureAnalysisScore: number;
+      spoofSuspected: boolean;
+      livenessScore: number;
+    }
+  ) => {
+    if (!sessionIdRef.current) return
+
+    // Build current signals from latest detections
+    const currentSignals = {
+      // From object detection
+      phoneDetected: !!cvStatus.objects.find(obj =>
+        ['cell phone', 'phone', 'mobile phone'].includes(obj.toLowerCase())
+      ),
+      multipleFaces: cvStatus.faceCount > 1,
+      faceLeftFrame: cvStatus.faceCount === 0,
+      // From gaze and head pose patterns (we'll use the active patterns helpers)
+      repeatedOffScreenGaze: getActiveGazeHeadPosePatterns(
+        gazeHeadPoseResult?.gaze ?? { x: 0, y: 0, lookingAtScreen: false },
+        gazeHeadPoseResult?.headPose ?? { pitch: 0, yaw: 0, roll: 0 }
+      ).includes('repeated_off_screen_gaze'),
+      longDownwardGaze: getActiveGazeHeadPosePatterns(
+        gazeHeadPoseResult?.gaze ?? { x: 0, y: 0, lookingAtScreen: false },
+        gazeHeadPoseResult?.headPose ?? { pitch: 0, yaw: 0, roll: 0 }
+      ).includes('long_downward_gaze'),
+      // Person absent and pose patterns from pose detection
+      personAbsent: getActivePosePatterns(
+        poseResult?.poseScore ?? 0,
+        poseResult?.personPresent ?? false,
+        poseResult?.shouldersVisible ?? false
+      ).includes('person_absent_from_frame'),
+      slouching: getActivePosePatterns(
+        poseResult?.poseScore ?? 0,
+        poseResult?.personPresent ?? false,
+        poseResult?.shouldersVisible ?? false
+      ).includes('slouching_posture'),
+      leaning: getActivePosePatterns(
+        poseResult?.poseScore ?? 0,
+        poseResult?.personPresent ?? false,
+        poseResult?.shouldersVisible ?? false
+      ).includes('leaning_posture'),
+      // Lighting: now integrated with real analysis from lighting analyzer
+      darkLighting: lightingResult?.darkLighting ?? false,
+      // Negative signals (reduce risk when good)
+      continuousFaceVisible: cvStatus.faceCount > 0,
+      goodLighting: lightingResult?.goodLighting ?? false,
+      spoofSuspected: livenessResult?.spoofSuspected ?? false
+    };
+
+    // Calculate risk score
+    const risk = calculateRiskScore({
+      events: recentEventsRef.current,
+      currentSignals
+    });
+
+    // Keep history of risk scores (last 20)
+    riskScoresRef.current = [
+      ...riskScoresRef.current,
+      risk
+    ].slice(-20);
+
+    // Send risk score to backend
+    try {
+      await fetch('/api/proctoring/risk-score', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          score: risk.score,
+          level: risk.level,
+          breakdown: risk.breakdown,
+          evidenceCount: risk.evidenceCount,
+          timestamp: risk.timestamp
+        }),
+      })
+    } catch (err) {
+      console.error('Failed to send risk score', err)
+    }
+  }
+
+  const endInterview = () => {
+    setIsRecording(false)
+    // Cleanup
+    if (frameSamplerRef.current) {
+      frameSamplerRef.current.stop()
+      frameSamplerRef.current = null
+    }
+    if (faceDetectorRef.current) {
+      faceDetectorRef.current.release()
+      faceDetectorRef.current = null
+    }
+    if (objectDetectorRef.current) {
+      objectDetectorRef.current.release()
+      objectDetectorRef.current = null
+    }
+    if (gazeHeadPoseEstimatorRef.current) {
+      gazeHeadPoseEstimatorRef.current.release()
+      gazeHeadPoseEstimatorRef.current = null
+    }
+    if (poseDetectorRef.current) {
+      poseDetectorRef.current.release()
+      poseDetectorRef.current = null
+    }
+    if (lightingAnalyzerRef.current) {
+      lightingAnalyzerRef.current.release()
+      lightingAnalyzerRef.current = null
+    }
+    if (livenessAnalyzerRef.current) {
+      livenessAnalyzerRef.current.release()
+      livenessAnalyzerRef.current = null
+    }
+    // Stop video stream
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream
+      stream.getTracks().forEach(track => track.stop())
+    }
+    onComplete()
+  }
+
+  // Emit lighting events when lighting becomes very dark or changes suddenly
+  const emitLightingEvents = async (lightingResult: {
+    brightness: number
+    contrast: number
+    uniformity: number
+    darkLighting: boolean
+    goodLighting: boolean
+  } | undefined) => {
+    if (!sessionIdRef.current || !lightingResult) return
+
+    const now = Date.now()
+    const canEmit = (eventType: string): boolean => {
+      const lastEmit = lastEmitRef.current.get(eventType) ?? 0
+      if (now - lastEmit > DEBOUNCE_MS) {
+        lastEmitRef.current.set(eventType, now)
+        return true
+      }
+      return false
+    }
+
+    if (lightingResult.darkLighting && canEmit('dark_lighting_detected')) {
+      await handleEventEmission({
+        type: 'dark_lighting_detected',
+        severity: 'high',
+        metadata: {
+          brightness: lightingResult.brightness,
+          contrast: lightingResult.contrast,
+          uniformity: lightingResult.uniformity
+        }
+      })
+    }
+
+    const prevLighting = prevLightingRef.current
+    if (prevLighting) {
+      const brightnessChange = Math.abs(lightingResult.brightness - prevLighting.brightness) / (prevLighting.brightness + 0.001)
+      const contrastChange = Math.abs(lightingResult.contrast - prevLighting.contrast) / (prevLighting.contrast + 0.001)
+      if ((brightnessChange > 0.3 || contrastChange > 0.5) && canEmit('lighting_change_detected')) {
+        await handleEventEmission({
+          type: 'lighting_change_detected',
+          severity: 'medium',
+          metadata: {
+            brightness: lightingResult.brightness,
+            brightnessChange,
+            contrast: lightingResult.contrast,
+            contrastChange,
+            previousBrightness: prevLighting.brightness,
+            previousContrast: prevLighting.contrast
+          }
+        })
+      }
+    }
+
+    prevLightingRef.current = {
+      brightness: lightingResult.brightness,
+      contrast: lightingResult.contrast,
+      timestamp: now
+    }
+  }
+
+  // Emit liveness events when spoofing is detected or liveness fails
+  const emitLivenessEvents = async (livenessResult: {
+    eyeAspectRatio: number
+    blinkRate: number
+    headMovementScore: number
+    textureAnalysisScore: number
+    spoofSuspected: boolean
+    livenessScore: number
+  } | undefined) => {
+    if (!sessionIdRef.current || !livenessResult) return
+
+    const now = Date.now()
+    const canEmit = (eventType: string): boolean => {
+      const lastEmit = lastEmitRef.current.get(eventType) ?? 0
+      if (now - lastEmit > DEBOUNCE_MS) {
+        lastEmitRef.current.set(eventType, now)
+        return true
+      }
+      return false
+    }
+
+    if (livenessResult.spoofSuspected && canEmit('spoof_suspected')) {
+      await handleEventEmission({
+        type: 'spoof_suspected',
+        severity: 'high',
+        metadata: {
+          eyeAspectRatio: livenessResult.eyeAspectRatio,
+          blinkRate: livenessResult.blinkRate,
+          headMovementScore: livenessResult.headMovementScore,
+          textureAnalysisScore: livenessResult.textureAnalysisScore,
+          livenessScore: livenessResult.livenessScore
+        }
+      })
+    }
+
+    if (livenessResult.livenessScore < 0.3 && canEmit('liveness_failed')) {
+      await handleEventEmission({
+        type: 'liveness_failed',
+        severity: 'high',
+        metadata: {
+          eyeAspectRatio: livenessResult.eyeAspectRatio,
+          blinkRate: livenessResult.blinkRate,
+          headMovementScore: livenessResult.headMovementScore,
+          textureAnalysisScore: livenessResult.textureAnalysisScore,
+          livenessScore: livenessResult.livenessScore
+        }
+      })
+    }
+  }
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
+  }
+
+  const avgSignalValue = signals.length > 0 ? signals.reduce((sum, s) => sum + s.value, 0) / signals.length : 0
+
+  return (
+    <div className="flex flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>{candidateName} - {jobTitle}</CardTitle>
+          <CardDescription>Live interview room</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-6">
+          {/* Video Area */}
+          <div className="relative aspect-video w-full overflow-hidden rounded-lg border-2 border-border bg-black">
+            {isVideoOff ? (
+              <div className="flex h-full items-center justify-center bg-neutral-900">
+                <div className="text-center">
+                  <VideoOff className="mx-auto mb-2 size-12 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">Video is off</p>
+                </div>
+              </div>
+            ) : videoElement ? (
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-contain"
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center bg-gradient-to-br from-blue-500 to-purple-600">
+                <p className="text-white">Video stream ready</p>
+              </div>
+            )}
+
+            {/* Connection Status */}
+            <div className="absolute right-2 top-2 flex items-center gap-2 rounded-full bg-black/80 px-3 py-1 text-xs text-green-400">
+              <div className="size-2 animate-pulse rounded-full bg-green-400" />
+              Connected
+            </div>
+
+            {/* Recording Indicator */}
+            {isRecording && (
+              <div className="absolute left-2 top-2 flex items-center gap-2 rounded-full bg-red-600 px-3 py-1 text-xs font-medium text-white">
+                <div className="size-2 animate-pulse rounded-full bg-white" />
+                Recording
+              </div>
+            )}
+          </div>
+
+          {/* Controls */}
+          <div className="flex flex-col gap-4">
+            {!isRecording ? (
+              <Button size="lg" onClick={startInterview} className="w-full">
+                Start Interview
+              </Button>
+            ) : (
+              <div className="flex gap-3">
+                <div className="flex-1 rounded-lg border border-border bg-muted p-4">
+                  <p className="text-sm font-medium">Elapsed Time</p>
+                  <p className="mt-2 font-mono text-2xl font-bold">{formatTime(elapsedSeconds)}</p>
+                </div>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => setIsMuted(!isMuted)}
+                  className="flex-1"
+                >
+                  {isMuted ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+                </Button>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => setIsVideoOff(!isVideoOff)}
+                  className="flex-1"
+                >
+                  {isVideoOff ? <VideoOff className="size-4" /> : <Video className="size-4" />}
+                </Button>
+                <Button size="lg" variant="destructive" onClick={endInterview} className="flex-1">
+                  <PhoneOff className="size-4" />
+                  End
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* Computer Vision Status */}
+          {isRecording && DEBUG_CV && (
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Eye className="size-4" />
+                <p className="text-sm font-medium">Computer Vision Status</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Face Detected</p>
+                  <p className="mt-1 text-foreground font-bold">
+                    {cvStatus.faceDetected ? `Yes (${cvStatus.faceCount})` : 'No'}
+                  </p>
+                </div>
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Objects Detected</p>
+                  <p className="mt-1 text-foreground text-xs">
+                    {cvStatus.objects.length > 0 ? cvStatus.objects.join(', ') : 'None'}
+                  </p>
+                </div>
+              </div>
+              {cvStatus.objects.some((obj: string) =>
+                ['cell phone', 'phone', 'mobile phone'].includes(obj.toLowerCase())
+              ) && (
+                <div className="mt-3 flex gap-2 rounded-lg border border-red-200 bg-red-50 p-3">
+                  <AlertTriangle className="size-4 flex-shrink-0 text-red-700" />
+                  <p className="text-xs text-red-700">
+                    Potential phone detected! Please ensure no unauthorized devices are present.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Gaze and Head Pose Status */}
+          {isRecording && DEBUG_CV && (
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Eye className="size-4" />
+                <p className="text-sm font-medium">Gaze & Head Pose</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Gaze</p>
+                  {gazeHeadPoseStatus.gaze ? (
+                    <>
+                      <p className="mt-1 text-foreground text-xs">
+                        X: {gazeHeadPoseStatus.gaze.x.toFixed(2)}, Y: {gazeHeadPoseStatus.gaze.y.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {gazeHeadPoseStatus.gaze.lookingAtScreen ? 'Looking at screen' : 'Looking away'}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No gaze data</p>
+                  )}
+                </div>
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Head Pose</p>
+                  {gazeHeadPoseStatus.headPose ? (
+                    <>
+                      <p className="mt-1 text-foreground text-xs">
+                        Pitch: {gazeHeadPoseStatus.headPose.pitch.toFixed(1)}°,
+                        Yaw: {gazeHeadPoseStatus.headPose.yaw.toFixed(1)}°,
+                        Roll: {gazeHeadPoseStatus.headPose.roll.toFixed(1)}°
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No head pose data</p>
+                  )}
+                </div>
+              </div>
+              {isBaselineComplete && (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  Baseline learned ({baselineData.gazeSamplesCollected} samples)
+                </div>
+              )}
+              {!isBaselineComplete && elapsedSeconds * 1000 >= BASELINE_DURATION_MS && (
+                <div className="mt-2 text-xs text-warning">
+                  Collecting baseline... ({gazeSamplesRef.current.length} samples)
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Pose Status */}
+          {isRecording && DEBUG_CV && (
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Smile className="size-4" />
+                <p className="text-sm font-medium">Posture & Presence</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Pose Score</p>
+                  {poseStatus.poseScore !== null ? (
+                    <>
+                      <p className="mt-1 text-foreground text-xs">
+                        {poseStatus.poseScore}/100
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {poseStatus.poseScore >= 80 ? 'Good' : poseStatus.poseScore >= 60 ? 'Fair' : 'Needs Improvement'}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No pose data</p>
+                  )}
+                </div>
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Person Present</p>
+                  {poseStatus.personPresent !== null ? (
+                    <p className="mt-1 text-foreground text-xs">
+                      {poseStatus.personPresent ? 'Yes' : 'No'}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No presence data</p>
+                  )}
+                </div>
+                <div className="rounded border border-border bg-background p-2">
+                  <p className="text-xs font-medium text-muted-foreground">Shoulders Visible</p>
+                  {poseStatus.shouldersVisible !== null ? (
+                    <p className="mt-1 text-foreground text-xs">
+                      {poseStatus.shouldersVisible ? 'Yes' : 'No'}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No shoulder data</p>
+                  )}
+                </div>
+              </div>
+              {isBaselineComplete && baselineData.poseScoreRange && (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  Baseline learned ({baselineData.poseSamplesCollected} samples)
+                </div>
+              )}
+              {!isBaselineComplete && elapsedSeconds * 1000 >= BASELINE_DURATION_MS && (
+                <div className="mt-2 text-xs text-warning">
+                  Collecting baseline... ({poseSamplesRef.current.length} samples)
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Behavioral Signals */}
+          {isRecording && DEBUG_CV && signals.length > 0 && (
+            <div className="rounded-lg border border-border bg-muted/50 p-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Eye className="size-4" />
+                <p className="text-sm font-medium">Behavioral Signals</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                {signals.slice(-4).map((signal, idx) => (
+                  <div key={idx} className="rounded border border-border bg-background p-2">
+                    <p className="text-xs font-medium text-muted-foreground">{signal.label}</p>
+                    <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-border">
+                      <div
+                        className="h-full bg-blue-500 transition-all duration-300"
+                        style={{ width: `${signal.value}%` }}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-foreground">{signal.value.toFixed(0)}%</p>
+                  </div>
+                ))}
+              </div>
+              {avgSignalValue < 40 && (
+                <div className="mt-3 flex gap-2 rounded-lg border border-yellow-200 bg-yellow-50 p-3">
+                  <AlertTriangle className="size-4 flex-shrink-0 text-yellow-700" />
+                  <p className="text-xs text-yellow-700">
+                    Low engagement signals detected. Consider redirecting conversation.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

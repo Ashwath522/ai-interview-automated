@@ -1,0 +1,1 @@
+"""CoreLink FastAPI service."""
