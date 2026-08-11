@@ -1,29 +1,31 @@
 'use client'
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { CheckIcon, ClockIcon, FileTextIcon } from "lucide-react"
 import { InterviewFlow } from "@/components/interview-flow"
+import { getCandidateInterviews } from "@/app/actions/core"
+
+type CandidateInterview = {
+  id: number
+  jobTitle: string
+  company: string
+  scheduledAt: string
+  status: string
+  durationMinutes: number
+}
 
 export function CandidateLobby() {
-  const [selectedInterview, setSelectedInterview] = useState<string | null>(null)
-  const upcomingInterviews = [
-    {
-      id: "1",
-      jobTitle: "Senior Frontend Engineer",
-      company: "TechCorp",
-      scheduledAt: "Tomorrow at 2:00 PM",
-      status: "confirmed",
-    },
-    {
-      id: "2",
-      jobTitle: "Product Designer",
-      company: "InnovateCo",
-      scheduledAt: "Next Monday at 10:00 AM",
-      status: "pending",
-    },
-  ]
+  const [selectedInterview, setSelectedInterview] = useState<number | null>(null)
+  const [upcomingInterviews, setUpcomingInterviews] = useState<CandidateInterview[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    getCandidateInterviews()
+      .then(setUpcomingInterviews)
+      .finally(() => setLoading(false))
+  }, [])
 
   if (selectedInterview) {
     const interview = upcomingInterviews.find((i) => i.id === selectedInterview)
@@ -32,7 +34,7 @@ export function CandidateLobby() {
         <main className="min-h-screen bg-background">
           <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
             <InterviewFlow
-              interviewId={selectedInterview}
+              interviewId={String(selectedInterview)}
               jobTitle={interview.jobTitle}
               onComplete={() => setSelectedInterview(null)}
             />
@@ -80,6 +82,14 @@ export function CandidateLobby() {
 
         <div className="space-y-4">
           <h2 className="text-xl font-semibold">Your Upcoming Interviews</h2>
+          {loading && <p className="text-sm text-muted-foreground">Loading interviews...</p>}
+          {!loading && upcomingInterviews.length === 0 && (
+            <Card>
+              <CardContent className="py-6 text-sm text-muted-foreground">
+                No interviews are scheduled for your account yet.
+              </CardContent>
+            </Card>
+          )}
           {upcomingInterviews.map((interview) => (
             <Card key={interview.id}>
               <CardHeader>
@@ -96,7 +106,7 @@ export function CandidateLobby() {
               <CardContent className="flex flex-col gap-4">
                 <div className="flex items-center gap-2 text-sm text-muted-foreground">
                   <ClockIcon className="size-4" />
-                  {interview.scheduledAt}
+                  {new Date(interview.scheduledAt).toLocaleString()}
                 </div>
 
                 <div className="rounded-lg bg-muted p-4">
@@ -121,10 +131,10 @@ export function CandidateLobby() {
                   className="w-full"
                   onClick={() => {
                     setSelectedInterview(interview.id)
-                    alert(`📝 Starting interview for:\n${interview.jobTitle}\nCompany: ${interview.company}\n\nPlease prepare for media setup and baseline capture.`)
                   }}
+                  disabled={interview.status === 'completed' || interview.status === 'cancelled'}
                 >
-                  {interview.status === "confirmed" ? "Enter Interview Room" : "Confirm Interview"}
+                  {interview.status === "completed" ? "Completed" : "Enter Interview Room"}
                 </Button>
               </CardContent>
             </Card>

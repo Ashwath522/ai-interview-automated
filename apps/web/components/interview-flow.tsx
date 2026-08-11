@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { CheckIcon, ChevronRightIcon, ClockIcon } from 'lucide-react'
 import { interviewService, InterviewData } from '@/lib/interview-service'
+import { markInterviewStarted } from '@/app/actions/core'
 
 interface InterviewFlowProps {
   interviewId: string
@@ -182,7 +183,10 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
       case 'baseline':
         return (
           <BaselineCapture
-            onComplete={() => setStep('interview')}
+            onComplete={async () => {
+              await markInterviewStarted(Number(interviewId))
+              setStep('interview')
+            }}
             duration={45}
           />
         )
@@ -214,6 +218,7 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
 
         return (
           <LiveInterviewRoom
+            interviewId={interviewId}
             jobTitle={jobTitle}
             candidateName="You"
             onComplete={() => setStep('complete')}

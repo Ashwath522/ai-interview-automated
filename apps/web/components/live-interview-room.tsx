@@ -13,6 +13,7 @@ import { LightingAnalyzer } from '@/lib/cv/lighting-analyzer'
 import { LivenessAnalyzer } from '@/lib/cv/liveness-analyzer'
 import { calculateRiskScore, ProctoringEvent, RiskOutput } from '@/lib/cv/risk-engine'
 import { useRollingVideoBuffer } from '@/lib/rolling-buffer'
+import { completeInterview } from '@/app/actions/core'
 
 // Debug flag to show detailed computer vision status (set to false for production candidate view)
 const DEBUG_CV = false
@@ -53,10 +54,12 @@ type BaselineData = {
 }
 
 export default function LiveInterviewRoom({
+  interviewId,
   jobTitle,
   candidateName,
   onComplete,
 }: {
+  interviewId: string
   jobTitle: string
   candidateName: string
   onComplete: () => void
@@ -91,6 +94,10 @@ export default function LiveInterviewRoom({
     poseBaselineReady: false
   })
   const [isBaselineComplete, setIsBaselineComplete] = useState(false)
+  const [questionIndex, setQuestionIndex] = useState(0)
+  const [currentAnswer, setCurrentAnswer] = useState('')
+  const [answers, setAnswers] = useState<{ question: string; answer: string; score: number; feedback: string }[]>([])
+  const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false)
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const recordingStartRef = useRef<number>(0)
@@ -123,6 +130,57 @@ export default function LiveInterviewRoom({
 
   // Hook for rolling video buffer
   const { getClip, takeSnapshot } = useRollingVideoBuffer(videoElement, { secondsToBuffer: 25 })
+  const questions = [
+    `To start, tell me about the experience that best prepares you for this ${jobTitle} role.`,
+    `Walk me through a difficult project decision you made and how you evaluated tradeoffs.`,
+    `Describe a time you received critical feedback. What changed afterward?`,
+    `What would you focus on in your first 30 days in this role?`,
+  ]
+
+  const evaluateAnswer = (question: string, answer: string) => {
+    const normalized = answer.toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
+    const words = normalized.split(/\s+/).filter(Boolean)
+    const uniqueWords = new Set(words)
+    const roleTerms = jobTitle.toLowerCase().split(/\s+/).filter((word) => word.length > 3)
+    const questionTerms = question.toLowerCase().split(/\s+/).filter((word) => word.length > 5)
+    const coverageTerms = [...new Set([...roleTerms, ...questionTerms])]
+    const coverage = coverageTerms.filter((term) => normalized.includes(term)).length
+    const depth = Math.min(45, words.length * 1.4)
+    const specificity = Math.min(25, uniqueWords.size * 0.8)
+    const relevance = Math.min(30, coverage * 8)
+    const score = Math.max(20, Math.min(100, Math.round(depth + specificity + relevance)))
+    const shallow = words.length < 22
+
+    return {
+      score,
+      feedback: shallow
+        ? 'Answer was brief; human reviewer should check depth and context.'
+        : score >= 70
+          ? 'Answer addressed the prompt with relevant detail and role context.'
+          : 'Answer was understandable but could use more concrete examples.',
+      shallow,
+    }
+  }
+
+  const submitAnswer = async () => {
+    if (!currentAnswer.trim()) return
+    setIsSubmittingAnswer(true)
+    const question = questions[questionIndex]
+    const result = evaluateAnswer(question, currentAnswer)
+    setAnswers((prev) => [...prev, { question, answer: currentAnswer, score: result.score, feedback: result.feedback }])
+    setCurrentAnswer('')
+
+    if (result.shallow && questionIndex < questions.length - 1) {
+      setQuestionIndex((prev) => prev + 1)
+    } else if (questionIndex < questions.length - 1) {
+      setQuestionIndex((prev) => prev + 1)
+    } else {
+      const finalAnswers = [...answers, { question, answer: currentAnswer, score: result.score, feedback: result.feedback }]
+      await completeInterview(Number(interviewId), finalAnswers)
+      endInterview()
+    }
+    setIsSubmittingAnswer(false)
+  }
 
   // Determine if we should clip for a given event
   const shouldClipEvent = (eventType: string, severity: 'low' | 'medium' | 'high'): boolean => {
@@ -306,8 +364,7 @@ export default function LiveInterviewRoom({
       await livenessAnalyzer.initialize()
       livenessAnalyzerRef.current = livenessAnalyzer
 
-      // Generate a session ID
-      sessionIdRef.current = crypto.randomUUID()
+      sessionIdRef.current = `interview:${interviewId}`
 
       // Set up frame sampler
       const frameSampler = new FrameSampler(async (canvas) => {
@@ -937,6 +994,11 @@ export default function LiveInterviewRoom({
     onComplete()
   }
 
+  const finishInterviewEarly = async () => {
+    await completeInterview(Number(interviewId), answers)
+    endInterview()
+  }
+
   // Emit lighting events when lighting becomes very dark or changes suddenly
   const emitLightingEvents = async (lightingResult: {
     brightness: number
@@ -1127,13 +1189,44 @@ export default function LiveInterviewRoom({
                 >
                   {isVideoOff ? <VideoOff className="size-4" /> : <Video className="size-4" />}
                 </Button>
-                <Button size="lg" variant="destructive" onClick={endInterview} className="flex-1">
+                <Button size="lg" variant="destructive" onClick={finishInterviewEarly} className="flex-1">
                   <PhoneOff className="size-4" />
                   End
                 </Button>
               </div>
             )}
           </div>
+
+          {isRecording && (
+            <div className="rounded-lg border border-border bg-background p-4">
+              <div className="mb-3">
+                <p className="text-xs font-medium uppercase text-muted-foreground">
+                  Question {Math.min(questionIndex + 1, questions.length)} of {questions.length}
+                </p>
+                <p className="mt-1 text-base font-medium">{questions[questionIndex]}</p>
+                {currentAnswer.trim().split(/\s+/).filter(Boolean).length > 0 &&
+                  currentAnswer.trim().split(/\s+/).filter(Boolean).length < 22 && (
+                    <p className="mt-2 text-sm text-muted-foreground">
+                      A little more detail helps the interviewer evaluate your answer fairly.
+                    </p>
+                  )}
+              </div>
+              <textarea
+                value={currentAnswer}
+                onChange={(event) => setCurrentAnswer(event.target.value)}
+                placeholder="Answer naturally, with examples where useful..."
+                className="min-h-28 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              />
+              <div className="mt-3 flex items-center justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  {answers.length} answer{answers.length === 1 ? '' : 's'} saved
+                </p>
+                <Button onClick={submitAnswer} disabled={isSubmittingAnswer || !currentAnswer.trim()}>
+                  {questionIndex === questions.length - 1 ? 'Submit Interview' : 'Submit Answer'}
+                </Button>
+              </div>
+            </div>
+          )}
 
           {/* Computer Vision Status */}
           {isRecording && DEBUG_CV && (

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   AlertTriangle,
   BriefcaseIcon,
@@ -19,6 +20,8 @@ import {
   moveToShortlist,
   hireCandidate,
   rejectCandidate,
+  getRecruiterPipelineCandidates,
+  scheduleInterviewBatch,
 } from "@/app/actions/core"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -49,6 +52,14 @@ type ShortlistData = {
   humanReviewRequired: boolean
 }
 
+type PipelineCandidate = {
+  candidateId: number
+  candidateName: string
+  jobId: number
+  jobTitle: string
+  stage: string
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function RecruiterDashboard() {
@@ -57,6 +68,11 @@ export function RecruiterDashboard() {
   const [shortlist, setShortlist] = useState<ShortlistData[]>([])
   const [loading, setLoading] = useState<boolean>(true)
   const [openJobs, setOpenJobs] = useState<{ id: number; title: string; organizationName: string }[]>([])
+  const [pipelineCandidates, setPipelineCandidates] = useState<PipelineCandidate[]>([])
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([])
+  const [selectedJobId, setSelectedJobId] = useState<number | ''>('')
+  const [scheduledAt, setScheduledAt] = useState('')
+  const [durationMinutes, setDurationMinutes] = useState(30)
 
   const { data: session } = useSession()
 
@@ -70,15 +86,18 @@ export function RecruiterDashboard() {
 
     setLoading(true)
     try {
-      const [jobs, completed, candidates] = await Promise.all([
+      const [jobs, completed, candidates, pipelineRows] = await Promise.all([
         getRecruiterJobs(),
         getCompletedInterviews(),
         getShortlistCandidates(),
+        getRecruiterPipelineCandidates(),
       ])
 
       setOpenJobs(jobs)
       setCompletedInterviews(completed as InterviewData[])
       setShortlist(candidates as ShortlistData[])
+      setPipelineCandidates(pipelineRows)
+      setSelectedJobId((current) => current || jobs[0]?.id || '')
     } catch (err) {
       console.error('Failed to load recruiter data:', err)
     } finally {
@@ -117,6 +136,30 @@ export function RecruiterDashboard() {
       await loadData()
     } else {
       alert(`Failed to reject candidate: ${result.error}`)
+    }
+  }
+
+  const toggleCandidate = (candidateId: number) => {
+    setSelectedCandidateIds((current) => {
+      if (current.includes(candidateId)) return current.filter((id) => id !== candidateId)
+      if (current.length >= 5) return current
+      return [...current, candidateId]
+    })
+  }
+
+  const handleScheduleBatch = async () => {
+    if (!selectedJobId || !scheduledAt) return
+    const result = await scheduleInterviewBatch({
+      jobId: selectedJobId,
+      candidateIds: selectedCandidateIds,
+      scheduledAt,
+      durationMinutes,
+    })
+    if (result.ok) {
+      setSelectedCandidateIds([])
+      await loadData()
+    } else {
+      alert(`Failed to schedule interviews: ${result.error}`)
     }
   }
 
@@ -210,6 +253,54 @@ export function RecruiterDashboard() {
 
         {/* Tabs */}
         <div className="mt-6">
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="text-base">Schedule Interviews</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <select
+                  value={selectedJobId}
+                  onChange={(event) => {
+                    setSelectedJobId(Number(event.target.value))
+                    setSelectedCandidateIds([])
+                  }}
+                  className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {openJobs.map((job) => (
+                    <option key={job.id} value={job.id}>{job.title}</option>
+                  ))}
+                </select>
+                <Input type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} />
+                <Input
+                  type="number"
+                  min={15}
+                  max={120}
+                  value={durationMinutes}
+                  onChange={(event) => setDurationMinutes(Number(event.target.value))}
+                />
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {pipelineCandidates
+                  .filter((candidate) => candidate.jobId === selectedJobId)
+                  .map((candidate) => (
+                    <label key={candidate.candidateId} className="flex items-center gap-3 rounded-md border p-3 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={selectedCandidateIds.includes(candidate.candidateId)}
+                        onChange={() => toggleCandidate(candidate.candidateId)}
+                      />
+                      <span className="flex-1">{candidate.candidateName}</span>
+                      <span className="text-xs text-muted-foreground">{candidate.stage}</span>
+                    </label>
+                  ))}
+              </div>
+              <Button onClick={handleScheduleBatch} disabled={!selectedJobId || !scheduledAt || selectedCandidateIds.length === 0}>
+                Schedule {selectedCandidateIds.length} Interview{selectedCandidateIds.length === 1 ? '' : 's'}
+              </Button>
+            </CardContent>
+          </Card>
+
           <div className="flex space-x-2 mb-4">
             <Button
               variant={activeTab === 'completed' ? 'default' : 'outline'}

@@ -1,8 +1,12 @@
 import { CandidateLobby } from '@/components/candidate/candidate-lobby'
+import { getCurrentRole } from '@/app/actions/core'
+import { redirect } from 'next/navigation'
 
 export const dynamic = 'force-dynamic'
 
-export default function CandidatePage() {
+export default async function CandidatePage() {
+  const role = await getCurrentRole()
+  if (role !== 'candidate') redirect('/sign-in')
   return <CandidateLobby />
 }
 
