@@ -12,7 +12,6 @@ import {
   BarChart3Icon,
   RefreshCcwIcon,
 } from "lucide-react"
-import { useSession } from "@/lib/auth-client"
 import {
   getRecruiterJobs,
   getCompletedInterviews,
@@ -22,6 +21,7 @@ import {
   rejectCandidate,
   getRecruiterPipelineCandidates,
   scheduleInterviewBatch,
+  getScheduledInterviews,
 } from "@/app/actions/core"
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -52,6 +52,16 @@ type ShortlistData = {
   humanReviewRequired: boolean
 }
 
+type ScheduledInterview = {
+  id: number
+  candidateName: string
+  jobTitle: string
+  company: string
+  scheduledAt: string
+  status: 'scheduled' | 'baseline' | 'active' | 'completed' | 'cancelled' | 'missed' | 'rescheduled'
+  durationMinutes: number
+}
+
 type PipelineCandidate = {
   candidateId: number
   candidateName: string
@@ -65,39 +75,39 @@ type PipelineCandidate = {
 export function RecruiterDashboard() {
   const [activeTab, setActiveTab] = useState<'completed' | 'shortlist'>('completed')
   const [completedInterviews, setCompletedInterviews] = useState<InterviewData[]>([])
+  const [scheduledInterviews, setScheduledInterviews] = useState<ScheduledInterview[]>([])
   const [shortlist, setShortlist] = useState<ShortlistData[]>([])
   const [loading, setLoading] = useState<boolean>(true)
-  const [openJobs, setOpenJobs] = useState<{ id: number; title: string; organizationName: string }[]>([])
+  const [openJobs, setOpenJobs] = useState<{ id: number; title: string; organizationName: string; description: string | null }[]>([])
   const [pipelineCandidates, setPipelineCandidates] = useState<PipelineCandidate[]>([])
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([])
   const [selectedJobId, setSelectedJobId] = useState<number | ''>('')
   const [scheduledAt, setScheduledAt] = useState('')
   const [durationMinutes, setDurationMinutes] = useState(30)
-
-  const { data: session } = useSession()
-
-  // ─── Load data ────────────────────────────────────────────────────────────
+  const [questionMode, setQuestionMode] = useState<'ai' | 'custom'>('ai')
+  const [jobDescription, setJobDescription] = useState('')
+  const [customQuestionsRaw, setCustomQuestionsRaw] = useState('')
 
   const loadData = async () => {
-    if (!session?.user?.id) {
-      setLoading(false)
-      return
-    }
-
     setLoading(true)
     try {
-      const [jobs, completed, candidates, pipelineRows] = await Promise.all([
+      const [jobs, completed, scheduled, candidates, pipelineRows] = await Promise.all([
         getRecruiterJobs(),
         getCompletedInterviews(),
+        getScheduledInterviews(),
         getShortlistCandidates(),
         getRecruiterPipelineCandidates(),
       ])
 
       setOpenJobs(jobs)
       setCompletedInterviews(completed as InterviewData[])
+      setScheduledInterviews(scheduled as ScheduledInterview[])
       setShortlist(candidates as ShortlistData[])
       setPipelineCandidates(pipelineRows)
       setSelectedJobId((current) => current || jobs[0]?.id || '')
+      if (!jobDescription && jobs[0]?.description) {
+        setJobDescription(jobs[0].description)
+      }
     } catch (err) {
       console.error('Failed to load recruiter data:', err)
     } finally {
@@ -107,8 +117,7 @@ export function RecruiterDashboard() {
 
   useEffect(() => {
     loadData()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user?.id])
+  }, [])
 
   // ─── Mutations ────────────────────────────────────────────────────────────
 
@@ -154,6 +163,9 @@ export function RecruiterDashboard() {
       candidateIds: selectedCandidateIds,
       scheduledAt,
       durationMinutes,
+      questionMode,
+      jobDescription: questionMode === 'ai' ? jobDescription : undefined,
+      customQuestionsRaw: questionMode === 'custom' ? customQuestionsRaw : undefined,
     })
     if (result.ok) {
       setSelectedCandidateIds([])
@@ -179,9 +191,6 @@ export function RecruiterDashboard() {
         <div className="mb-8">
           <h1 className="text-3xl font-bold">Recruiter Workspace</h1>
           <p className="mt-2 text-muted-foreground">Manage jobs, schedule interviews, and review candidates</p>
-          <p className="mt-2 inline-block rounded-full bg-blue-100 px-3 py-1 text-xs font-medium text-blue-700">
-            Demo Mode: Recruiter Access
-          </p>
         </div>
 
         {/* Stats */}
@@ -212,7 +221,7 @@ export function RecruiterDashboard() {
             </CardHeader>
             <CardContent className="flex items-end gap-2">
               <CheckCircleIcon className="size-5 text-primary" />
-              <span className="text-2xl font-bold">—</span>
+              <span className="text-2xl font-bold">{scheduledInterviews.length}</span>
             </CardContent>
           </Card>
 
@@ -262,8 +271,11 @@ export function RecruiterDashboard() {
                 <select
                   value={selectedJobId}
                   onChange={(event) => {
-                    setSelectedJobId(Number(event.target.value))
+                    const jobId = Number(event.target.value)
+                    setSelectedJobId(jobId)
                     setSelectedCandidateIds([])
+                    const job = openJobs.find((item) => item.id === jobId)
+                    setJobDescription(job?.description ?? '')
                   }}
                   className="rounded-md border border-input bg-background px-3 py-2 text-sm"
                 >
@@ -280,6 +292,57 @@ export function RecruiterDashboard() {
                   onChange={(event) => setDurationMinutes(Number(event.target.value))}
                 />
               </div>
+
+              <div className="space-y-3 rounded-md border p-4">
+                <p className="text-sm font-medium">Interview questions</p>
+                <div className="flex flex-col gap-2 sm:flex-row sm:gap-6">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="questionMode"
+                      checked={questionMode === 'ai'}
+                      onChange={() => setQuestionMode('ai')}
+                    />
+                    AI generate questions
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name="questionMode"
+                      checked={questionMode === 'custom'}
+                      onChange={() => setQuestionMode('custom')}
+                    />
+                    Use my questions
+                  </label>
+                </div>
+
+                {questionMode === 'ai' ? (
+                  <div className="space-y-2">
+                    <label className="text-sm text-muted-foreground">
+                      Job description (required for AI questions)
+                    </label>
+                    <textarea
+                      value={jobDescription}
+                      onChange={(event) => setJobDescription(event.target.value)}
+                      className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder="Describe responsibilities, skills, and expectations for this role."
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-sm text-muted-foreground">
+                      One question per line. Optional expected points after |
+                    </label>
+                    <textarea
+                      value={customQuestionsRaw}
+                      onChange={(event) => setCustomQuestionsRaw(event.target.value)}
+                      className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                      placeholder={'Tell me about your relevant experience | experience, role fit\nDescribe a tough tradeoff you made | decision making'}
+                    />
+                  </div>
+                )}
+              </div>
+
               <div className="grid gap-2 md:grid-cols-2">
                 {pipelineCandidates
                   .filter((candidate) => candidate.jobId === selectedJobId)
@@ -295,9 +358,43 @@ export function RecruiterDashboard() {
                     </label>
                   ))}
               </div>
-              <Button onClick={handleScheduleBatch} disabled={!selectedJobId || !scheduledAt || selectedCandidateIds.length === 0}>
+              <Button
+                onClick={handleScheduleBatch}
+                disabled={
+                  !selectedJobId ||
+                  !scheduledAt ||
+                  selectedCandidateIds.length === 0 ||
+                  (questionMode === 'ai' && !jobDescription.trim()) ||
+                  (questionMode === 'custom' && !customQuestionsRaw.trim())
+                }
+              >
                 Schedule {selectedCandidateIds.length} Interview{selectedCandidateIds.length === 1 ? '' : 's'}
               </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle className="text-base">Scheduled Interviews</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {loading ? (
+                <p className="text-sm text-muted-foreground">Loading scheduled interviews…</p>
+              ) : scheduledInterviews.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No interviews scheduled yet.</p>
+              ) : (
+                scheduledInterviews.map((interview) => (
+                  <div key={interview.id} className="flex items-center justify-between rounded-md border p-3">
+                    <div>
+                      <p className="font-medium">{interview.candidateName}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {interview.jobTitle} · {formatDateTime(interview.scheduledAt)}
+                      </p>
+                    </div>
+                    <span className="text-xs capitalize text-muted-foreground">{interview.status}</span>
+                  </div>
+                ))
+              )}
             </CardContent>
           </Card>
 
@@ -380,13 +477,21 @@ export function RecruiterDashboard() {
                       </div>
                       <div className="mt-4 flex justify-end space-x-3">
                         {interview.status === 'completed' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleMoveToShortlist(interview.id)}
-                          >
-                            Move to Shortlist
-                          </Button>
+                          <>
+                            <a
+                              href={`/recruiter/evidence?interviewId=${interview.id}`}
+                              className="inline-flex h-7 items-center justify-center rounded-[min(var(--radius-md),12px)] border border-border bg-background px-2.5 text-[0.8rem] font-medium hover:bg-muted"
+                            >
+                              View Evidence
+                            </a>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleMoveToShortlist(interview.id)}
+                            >
+                              Move to Shortlist
+                            </Button>
+                          </>
                         )}
                         <Button
                           variant="ghost"

@@ -8,6 +8,7 @@ export interface InterviewData {
   durationMinutes: number
   status: 'scheduled' | 'baseline' | 'active' | 'completed' | 'cancelled' | 'missed' | 'rescheduled'
   canJoin: boolean
+  joinBlockReason?: string | null
   timeToStart: number // milliseconds until interview can start (negative if already started)
   timeUntilEnd: number // milliseconds until interview ends (negative if already ended)
   windowStart: number // milliseconds from now when window opens

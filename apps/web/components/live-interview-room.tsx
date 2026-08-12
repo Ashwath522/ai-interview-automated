@@ -11,9 +11,10 @@ import { GazeHeadPoseEstimator, GazeEstimate, HeadPose, GazeHeadPoseResult } fro
 import { PoseDetector, PoseResult } from '@/lib/cv/pose-detector'
 import { LightingAnalyzer } from '@/lib/cv/lighting-analyzer'
 import { LivenessAnalyzer } from '@/lib/cv/liveness-analyzer'
-import { calculateRiskScore, ProctoringEvent, RiskOutput } from '@/lib/cv/risk-engine'
+import { calculateRiskScore, ProctoringEvent, RiskOutput, HIGH_SEVERITY_EVENT_TYPES } from '@/lib/cv/risk-engine'
 import { useRollingVideoBuffer } from '@/lib/rolling-buffer'
-import { completeInterview } from '@/app/actions/core'
+import { completeInterview, getInterviewQuestions, getNextInterviewStep } from '@/app/actions/core'
+import { useSpeechRecognition, speakText } from '@/lib/use-speech-recognition'
 
 // Debug flag to show detailed computer vision status (set to false for production candidate view)
 const DEBUG_CV = false
@@ -94,10 +95,25 @@ export default function LiveInterviewRoom({
     poseBaselineReady: false
   })
   const [isBaselineComplete, setIsBaselineComplete] = useState(false)
-  const [questionIndex, setQuestionIndex] = useState(0)
-  const [currentAnswer, setCurrentAnswer] = useState('')
+  const isBaselineCompleteRef = useRef(false)
+  const [baseIndex, setBaseIndex] = useState(0)
+  const [isFollowUp, setIsFollowUp] = useState(false)
+  const [displayQuestion, setDisplayQuestion] = useState('')
+  const [baseQuestions, setBaseQuestions] = useState<string[]>([])
   const [answers, setAnswers] = useState<{ question: string; answer: string; score: number; feedback: string }[]>([])
+  const [qaHistory, setQaHistory] = useState<{ question: string; answer: string }[]>([])
   const [isSubmittingAnswer, setIsSubmittingAnswer] = useState(false)
+  const [isThinking, setIsThinking] = useState(false)
+  const {
+    transcript,
+    displayTranscript,
+    isListening,
+    micDenied,
+    supported: speechSupported,
+    startListening,
+    stopListening,
+    resetTranscript,
+  } = useSpeechRecognition()
   const [videoElement, setVideoElement] = useState<HTMLVideoElement | null>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const recordingStartRef = useRef<number>(0)
@@ -130,12 +146,40 @@ export default function LiveInterviewRoom({
 
   // Hook for rolling video buffer
   const { getClip, takeSnapshot } = useRollingVideoBuffer(videoElement, { secondsToBuffer: 25 })
-  const questions = [
-    `To start, tell me about the experience that best prepares you for this ${jobTitle} role.`,
-    `Walk me through a difficult project decision you made and how you evaluated tradeoffs.`,
-    `Describe a time you received critical feedback. What changed afterward?`,
-    `What would you focus on in your first 30 days in this role?`,
-  ]
+
+  useEffect(() => {
+    isBaselineCompleteRef.current = isBaselineComplete
+  }, [isBaselineComplete])
+
+  useEffect(() => {
+    getInterviewQuestions(Number(interviewId)).then((result) => {
+      if ('questions' in result && result.questions.length) {
+        setBaseQuestions(result.questions)
+        setDisplayQuestion(result.questions[0])
+      }
+    })
+  }, [interviewId])
+
+  useEffect(() => {
+    if (isRecording && displayQuestion) {
+      speakText(displayQuestion)
+    }
+  }, [displayQuestion, isRecording])
+
+  const activeQuestions =
+    baseQuestions.length > 0
+      ? baseQuestions
+      : [
+          `Tell me about your experience relevant to this ${jobTitle} role.`,
+          'Describe a challenging decision you made recently.',
+          'What would you focus on in your first 30 days?',
+        ]
+
+  useEffect(() => {
+    if (!displayQuestion && activeQuestions.length > 0) {
+      setDisplayQuestion(activeQuestions[0])
+    }
+  }, [activeQuestions, displayQuestion])
 
   const evaluateAnswer = (question: string, answer: string) => {
     const normalized = answer.toLowerCase().replace(/[^a-z0-9\s]/g, ' ')
@@ -162,40 +206,64 @@ export default function LiveInterviewRoom({
     }
   }
 
-  const submitAnswer = async () => {
-    if (!currentAnswer.trim()) return
-    setIsSubmittingAnswer(true)
-    const question = questions[questionIndex]
-    const result = evaluateAnswer(question, currentAnswer)
-    setAnswers((prev) => [...prev, { question, answer: currentAnswer, score: result.score, feedback: result.feedback }])
-    setCurrentAnswer('')
+  const submitVoiceAnswer = async () => {
+    const answerText = transcript.trim()
+    if (!answerText || !displayQuestion || isSubmittingAnswer || isThinking) return
 
-    if (result.shallow && questionIndex < questions.length - 1) {
-      setQuestionIndex((prev) => prev + 1)
-    } else if (questionIndex < questions.length - 1) {
-      setQuestionIndex((prev) => prev + 1)
-    } else {
-      const finalAnswers = [...answers, { question, answer: currentAnswer, score: result.score, feedback: result.feedback }]
-      await completeInterview(Number(interviewId), finalAnswers)
-      endInterview()
+    setIsSubmittingAnswer(true)
+    setIsThinking(true)
+    stopListening()
+
+    const question = displayQuestion
+    const result = evaluateAnswer(question, answerText)
+    const newAnswer = { question, answer: answerText, score: result.score, feedback: result.feedback }
+    const newHistory = [...qaHistory, { question, answer: answerText }]
+    const updatedAnswers = [...answers, newAnswer]
+
+    setAnswers(updatedAnswers)
+    setQaHistory(newHistory)
+    resetTranscript()
+
+    const step = await getNextInterviewStep({
+      interviewId: Number(interviewId),
+      baseQuestionIndex: baseIndex,
+      isFollowUpQuestion: isFollowUp,
+      currentQuestion: question,
+      candidateAnswer: answerText,
+      priorQA: newHistory,
+    })
+
+    setIsThinking(false)
+
+    if ('error' in step) {
+      setIsSubmittingAnswer(false)
+      return
     }
+
+    if (step.action === 'complete') {
+      await completeInterview(Number(interviewId), updatedAnswers)
+      endInterview()
+      setIsSubmittingAnswer(false)
+      return
+    }
+
+    if (step.action === 'follow_up' && step.question) {
+      setIsFollowUp(true)
+      setDisplayQuestion(step.question)
+    } else if (step.action === 'next_base') {
+      setIsFollowUp(false)
+      const nextIndex = step.nextBaseIndex ?? baseIndex + 1
+      setBaseIndex(nextIndex)
+      setDisplayQuestion(step.question ?? activeQuestions[nextIndex] ?? '')
+    }
+
     setIsSubmittingAnswer(false)
   }
 
   // Determine if we should clip for a given event
   const shouldClipEvent = (eventType: string, severity: 'low' | 'medium' | 'high'): boolean => {
-    // Always clip for high severity events
     if (severity === 'high') return true
-    // Clip for specific event types regardless of severity
-    const clipWorthyTypes = new Set([
-      'phone_detected',
-      'multiple_faces',
-      'face_left_frame',
-      'person_absent_from_frame',
-      'spoofSuspected', // if we had it
-      // Add more as needed
-    ])
-    return clipWorthyTypes.has(eventType)
+    return HIGH_SEVERITY_EVENT_TYPES.has(eventType)
   }
 
   // Upload media (clip and snapshot) for a given event
@@ -203,13 +271,13 @@ export default function LiveInterviewRoom({
     try {
       const formData = new FormData()
       formData.append('event_id', eventId.toString())
+      formData.append('session_id', sessionIdRef.current ?? `interview:${interviewId}`)
       formData.append('clip', clipBlob, 'clip.webm')
       formData.append('snapshot', snapshotBlob, 'snapshot.jpg')
 
       await fetch('/api/proctoring/media/upload', {
         method: 'POST',
         body: formData,
-        // Note: don't set Content-Type header, let browser set it for multipart
       })
     } catch (err) {
       console.error('Failed to upload media for event', err)
@@ -223,16 +291,24 @@ export default function LiveInterviewRoom({
     metadata: Record<string, any>;
   }) => {
     const eventId = await fetchEvent(event)
-    if (eventId !== null && shouldClipEvent(event.type, event.severity)) {
-      // Get clip and snapshot
-      const clipBlob = getClip(15) // last 15 seconds
-      const snapshotBlob = await takeSnapshot() // note: takeSnapshot returns a Promise<Blob|null>
-      // Only upload if we have both a clip with data and a snapshot
-      if (clipBlob.size > 0 && snapshotBlob) {
-        // Upload media
-        await uploadMediaForEvent(eventId, clipBlob, snapshotBlob)
-      }
+    if (eventId === null) return
+
+    const needsMedia = event.severity === 'high' || shouldClipEvent(event.type, event.severity)
+    if (!needsMedia) return
+
+    let snapshotBlob = await takeSnapshot()
+    if (!snapshotBlob && event.severity === 'high') {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      snapshotBlob = await takeSnapshot()
     }
+    if (!snapshotBlob) return
+
+    const clipBlob = event.severity === 'high' ? getClip(15) : new Blob()
+    await uploadMediaForEvent(
+      eventId,
+      clipBlob.size > 0 ? clipBlob : new Blob(),
+      snapshotBlob,
+    )
   }
 
   const BASELINE_DURATION_MS = 50000 // 50 seconds for baseline (can be 45-60s, we'll use 50s for simplicity)
@@ -246,27 +322,6 @@ export default function LiveInterviewRoom({
     recordingStartRef.current = Date.now() - elapsedSeconds * 1000
     const timer = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1)
-
-      // Simulate behavioral signal sampling every 5 seconds
-      if (elapsedSeconds % 5 === 0) {
-        const signalTypes: Array<'attention' | 'engagement' | 'confidence' | 'concern'> = [
-          'attention',
-          'engagement',
-          'confidence',
-        ]
-        const randomSignal = signalTypes[Math.floor(Math.random() * signalTypes.length)]
-        const value = 50 + Math.random() * 50 // 50-100
-
-        setSignals((prev) => [
-          ...prev,
-          {
-            type: randomSignal,
-            label: randomSignal.charAt(0).toUpperCase() + randomSignal.slice(1),
-            value,
-            timestamp: Date.now(),
-          },
-        ])
-      }
     }, 1000)
 
     return () => clearInterval(timer)
@@ -311,6 +366,7 @@ export default function LiveInterviewRoom({
 
     const baselineDataCopy = baselineData
     if (baselineDataCopy.gazeBaselineReady && baselineDataCopy.poseBaselineReady && !isBaselineComplete) {
+      isBaselineCompleteRef.current = true
       setIsBaselineComplete(true)
 
       // Send baseline to backend with available data
@@ -404,22 +460,19 @@ export default function LiveInterviewRoom({
           // Process pose for baseline learning and pattern detection
           await processPose(poseResult, Date.now())
 
-          // Emit events based on CV status (object/face detection)
-          await emitCVEvents(newCVStatus)
-
-          // Emit lighting events if significant changes detected
-          await emitLightingEvents(lightingResult)
-          // Emit liveness events if spoofing detected or liveness failed
-          await emitLivenessEvents(livenessResult)
-
-          // Calculate and send risk score with lighting and liveness data
-          await calculateAndSendRiskScore(
-            newCVStatus,
-            gazeHeadPoseResult,
-            poseResult,
-            lightingResult,
-            livenessResult
-          )
+          // Proctoring events only after personal baseline is learned
+          if (isBaselineCompleteRef.current) {
+            await emitCVEvents(newCVStatus)
+            await emitLightingEvents(lightingResult)
+            await emitLivenessEvents(livenessResult)
+            await calculateAndSendRiskScore(
+              newCVStatus,
+              gazeHeadPoseResult,
+              poseResult,
+              lightingResult,
+              livenessResult
+            )
+          }
         }
       })
       frameSamplerRef.current = frameSampler
@@ -529,7 +582,7 @@ export default function LiveInterviewRoom({
     }
 
     // If baseline is complete, check for patterns
-    if (isBaselineComplete && baselineData.gazeCenter && baselineData.gazeRange && baselineData.headPoseRange) {
+    if (isBaselineCompleteRef.current && baselineData.gazeCenter && baselineData.gazeRange && baselineData.headPoseRange) {
       await checkForPattern(gaze, headPose)
     }
   }
@@ -546,26 +599,26 @@ export default function LiveInterviewRoom({
     }
 
     const activePatterns = getActiveGazeHeadPosePatterns(currentGaze, currentHeadPose)
+    const patternSeverity: Record<string, 'medium' | 'high'> = {
+      repeated_off_screen_gaze: 'medium',
+      long_downward_gaze: 'medium',
+      frequent_side_turns: 'medium',
+      looking_behind: 'high',
+      gaze_deviation_from_baseline: 'medium',
+    }
     for (const pattern of activePatterns) {
       if (canEmit(pattern)) {
-        // We need to emit an event for this pattern. We'll reuse the metadata from the helper?
-        // For simplicity, we'll emit without metadata for now, or we can compute metadata similarly.
-        // But the existing fetchEvent expects metadata. Let's compute minimal metadata.
-        // We'll create a metadata object with the pattern name and maybe the current values.
-        // However, to avoid duplicating logic, we'll just emit an event with basic info.
-        // The risk engine will use the currentSignals, not the event metadata.
-        // So we can emit an event with empty metadata.
         await handleEventEmission({
           type: pattern,
-          severity: 'medium', // default, we can adjust per pattern later if needed
-          metadata: {}
+          severity: patternSeverity[pattern] ?? 'medium',
+          metadata: {},
         })
       }
     }
   }
 
   const emitCVEvents = async (status: CVStatus) => {
-    if (!sessionIdRef.current) return
+    if (!sessionIdRef.current || !isBaselineCompleteRef.current) return
 
     const now = Date.now()
     const canEmit = (eventType: string): boolean => {
@@ -593,7 +646,7 @@ export default function LiveInterviewRoom({
     if (status.faceCount === 0 && canEmit('face_left_frame')) {
       await handleEventEmission({
         type: 'face_left_frame',
-        severity: 'medium',
+        severity: 'high',
         metadata: { count: 0 }
       })
     }
@@ -711,7 +764,7 @@ export default function LiveInterviewRoom({
     }
 
     // Pattern 5: gaze deviation from baseline (if gaze is consistently outside baseline range)
-    if (gazeSamplesRef.current.length >= 10 && isBaselineComplete && baselineData.gazeCenter && baselineData.gazeRange) {
+    if (gazeSamplesRef.current.length >= 10 && isBaselineCompleteRef.current && baselineData.gazeCenter && baselineData.gazeRange) {
       const gazeOutsideCount = gazeSamplesRef.current.filter(sample =>
         sample.gaze.x < baselineData.gazeRange!.xMin ||
         sample.gaze.x > baselineData.gazeRange!.xMax ||
@@ -829,7 +882,7 @@ export default function LiveInterviewRoom({
     }
 
     // If baseline is complete, check for patterns
-    if (isBaselineComplete && baselineData.poseScoreRange) {
+    if (isBaselineCompleteRef.current && baselineData.poseScoreRange) {
       await checkForPosePattern(poseScore, personPresent, shouldersVisible)
     }
   }
@@ -848,11 +901,14 @@ export default function LiveInterviewRoom({
     const activePatterns = getActivePosePatterns(currentPoseScore, currentPersonPresent, currentShouldersVisible)
     for (const pattern of activePatterns) {
       if (canEmit(pattern)) {
-        // Emit event with minimal metadata (risk engine uses currentSignals, not event metadata)
+        const highSeverityPatterns = new Set([
+          'person_absent_from_frame',
+          'shoulders_not_visible',
+        ])
         await handleEventEmission({
           type: pattern,
-          severity: 'medium', // default, we can adjust per pattern later if needed
-          metadata: {}
+          severity: highSeverityPatterns.has(pattern) ? 'high' : 'medium',
+          metadata: {},
         })
       }
     }
@@ -956,6 +1012,10 @@ export default function LiveInterviewRoom({
   }
 
   const endInterview = () => {
+    stopListening()
+    if (typeof window !== 'undefined') {
+      window.speechSynthesis?.cancel()
+    }
     setIsRecording(false)
     // Cleanup
     if (frameSamplerRef.current) {
@@ -999,7 +1059,6 @@ export default function LiveInterviewRoom({
     endInterview()
   }
 
-  // Emit lighting events when lighting becomes very dark or changes suddenly
   const emitLightingEvents = async (lightingResult: {
     brightness: number
     contrast: number
@@ -1007,7 +1066,7 @@ export default function LiveInterviewRoom({
     darkLighting: boolean
     goodLighting: boolean
   } | undefined) => {
-    if (!sessionIdRef.current || !lightingResult) return
+    if (!sessionIdRef.current || !lightingResult || !isBaselineCompleteRef.current) return
 
     const now = Date.now()
     const canEmit = (eventType: string): boolean => {
@@ -1067,7 +1126,7 @@ export default function LiveInterviewRoom({
     spoofSuspected: boolean
     livenessScore: number
   } | undefined) => {
-    if (!sessionIdRef.current || !livenessResult) return
+    if (!sessionIdRef.current || !livenessResult || !isBaselineCompleteRef.current) return
 
     const now = Date.now()
     const canEmit = (eventType: string): boolean => {
@@ -1201,30 +1260,60 @@ export default function LiveInterviewRoom({
             <div className="rounded-lg border border-border bg-background p-4">
               <div className="mb-3">
                 <p className="text-xs font-medium uppercase text-muted-foreground">
-                  Question {Math.min(questionIndex + 1, questions.length)} of {questions.length}
+                  {isFollowUp
+                    ? 'Follow-up question'
+                    : `Question ${Math.min(baseIndex + 1, activeQuestions.length)} of ${activeQuestions.length}`}
                 </p>
-                <p className="mt-1 text-base font-medium">{questions[questionIndex]}</p>
-                {currentAnswer.trim().split(/\s+/).filter(Boolean).length > 0 &&
-                  currentAnswer.trim().split(/\s+/).filter(Boolean).length < 22 && (
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      A little more detail helps the interviewer evaluate your answer fairly.
-                    </p>
-                  )}
+                <p className="mt-1 text-base font-medium">{displayQuestion || activeQuestions[baseIndex]}</p>
+                {isThinking && (
+                  <p className="mt-2 text-sm text-muted-foreground animate-pulse">Thinking…</p>
+                )}
               </div>
-              <textarea
-                value={currentAnswer}
-                onChange={(event) => setCurrentAnswer(event.target.value)}
-                placeholder="Answer naturally, with examples where useful..."
-                className="min-h-28 w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              />
-              <div className="mt-3 flex items-center justify-between gap-3">
-                <p className="text-xs text-muted-foreground">
-                  {answers.length} answer{answers.length === 1 ? '' : 's'} saved
+
+              {!speechSupported ? (
+                <p className="text-sm text-destructive">
+                  Voice input is not supported in this browser. Please use Chrome or Edge.
                 </p>
-                <Button onClick={submitAnswer} disabled={isSubmittingAnswer || !currentAnswer.trim()}>
-                  {questionIndex === questions.length - 1 ? 'Submit Interview' : 'Submit Answer'}
-                </Button>
-              </div>
+              ) : micDenied ? (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
+                  <p className="text-sm text-destructive">
+                    Microphone access is required. Enable your mic in browser settings and refresh — text answers are not accepted.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="min-h-28 w-full rounded-lg border border-input bg-muted/40 px-3 py-2 text-sm">
+                    {displayTranscript || (
+                      <span className="text-muted-foreground">
+                        {isListening ? 'Listening… speak your answer.' : 'Tap the mic to start speaking.'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant={isListening ? 'default' : 'outline'}
+                        size="sm"
+                        onClick={() => (isListening ? stopListening() : startListening())}
+                        disabled={isSubmittingAnswer || isThinking}
+                      >
+                        {isListening ? <Mic className="size-4" /> : <MicOff className="size-4" />}
+                        {isListening ? 'Stop' : 'Speak'}
+                      </Button>
+                      <p className="text-xs text-muted-foreground">
+                        {answers.length} answer{answers.length === 1 ? '' : 's'} saved
+                      </p>
+                    </div>
+                    <Button
+                      onClick={submitVoiceAnswer}
+                      disabled={isSubmittingAnswer || isThinking || !transcript.trim()}
+                    >
+                      {isThinking ? 'Thinking…' : 'Submit Answer'}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           )}
 

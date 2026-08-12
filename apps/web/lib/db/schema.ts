@@ -81,6 +81,8 @@ export const job = pgTable('job', {
   userId: text('userId').notNull(), // recruiter userId
   title: text('title').notNull(),
   description: text('description'),
+  questionMode: text('questionMode'), // 'ai' | 'custom'
+  questionSet: jsonb('questionSet'), // { mode, questions: [{ question, expectedPoints? }] }
   status: text('status').notNull().default('active'), // 'active' | 'closed'
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),
@@ -108,6 +110,7 @@ export const interview = pgTable('interview', {
   completedAt: timestamp('completedAt'),
   durationMinutes: integer('durationMinutes'),
   roomUrl: text('roomUrl'),
+  questionSet: jsonb('questionSet'), // copied from job batch at schedule time
   riskScore: integer('riskScore'), // 0-100, null until available
   createdAt: timestamp('createdAt').notNull().defaultNow(),
   updatedAt: timestamp('updatedAt').notNull().defaultNow(),

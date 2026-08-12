@@ -1,62 +1,46 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, CheckCircle, Clock, ThumbsUp, ThumbsDown, Flag, MessageSquare } from 'lucide-react'
+import { ThumbsUp, ThumbsDown, CheckCircle, Flag } from 'lucide-react'
+import {
+  moveToShortlist,
+} from '@/app/actions/core'
 
-type Evidence = {
-  id: string
+type EvidenceSummary = {
+  interviewId: number
   candidateName: string
   jobTitle: string
-  status: 'completed' | 'in-progress'
-  duration: number
-  behavioralScore: number
-  riskLevel: 'low' | 'medium' | 'high'
-  signals: { type: string; value: number }[]
-  transcriptSnippet: string
+  company: string
+  status: string
+  scheduledAt: string | null
+  riskScore: number | null
+  interviewScore: number | null
+  transcriptSnippet: string | null
+  events: {
+    event_type: string
+    severity: string
+    timestamp: string
+    snapshot_url?: string
+    clip_url?: string
+  }[]
 }
 
-export default function EvidenceReview() {
-  const [selectedEvidence, setSelectedEvidence] = useState<Evidence | null>(null)
+export default function EvidenceReview({ summary }: { summary: EvidenceSummary }) {
   const [decision, setDecision] = useState<'pass' | 'reject' | null>(null)
   const [notes, setNotes] = useState('')
+  const [message, setMessage] = useState<string | null>(null)
 
-  const evidence: Evidence[] = [
-    {
-      id: '1',
-      candidateName: 'Alex Johnson',
-      jobTitle: 'Senior Frontend Engineer',
-      status: 'completed',
-      duration: 2400,
-      behavioralScore: 82,
-      riskLevel: 'low',
-      signals: [
-        { type: 'Engagement', value: 85 },
-        { type: 'Confidence', value: 78 },
-        { type: 'Attention', value: 88 },
-      ],
-      transcriptSnippet: 'I have 5 years of React experience and recently led a team project...',
-    },
-    {
-      id: '2',
-      candidateName: 'Sam Kim',
-      jobTitle: 'Product Designer',
-      status: 'completed',
-      duration: 2100,
-      behavioralScore: 71,
-      riskLevel: 'medium',
-      signals: [
-        { type: 'Engagement', value: 65 },
-        { type: 'Confidence', value: 72 },
-        { type: 'Attention', value: 75 },
-      ],
-      transcriptSnippet: 'My design philosophy centers on user-centered research and accessibility...',
-    },
-  ]
-
-  const currentEvidence = selectedEvidence || evidence[0]
-  if (!currentEvidence) return null
+  const riskLevel =
+    summary.riskScore === null
+      ? 'low'
+      : summary.riskScore >= 80
+        ? 'high'
+        : summary.riskScore >= 60
+          ? 'medium'
+          : 'low'
 
   const riskColor = {
     low: 'text-green-700 bg-green-50 border-green-200',
@@ -70,101 +54,105 @@ export default function EvidenceReview() {
     high: 'High Risk',
   }
 
+  const applyDecision = async (next: 'pass' | 'reject') => {
+    setDecision(next)
+    setMessage(null)
+
+    if (next === 'pass') {
+      const result = await moveToShortlist(summary.interviewId)
+      setMessage(result.ok ? 'Candidate moved to shortlist.' : result.error ?? 'Action failed.')
+      return
+    }
+
+    setMessage('Use hire/reject from the shortlist after review, or reject from dashboard.')
+  }
+
   return (
     <div className="grid gap-6 lg:grid-cols-3">
-      {/* Evidence List */}
       <Card className="lg:col-span-1">
         <CardHeader>
-          <CardTitle>Completed Interviews</CardTitle>
-          <CardDescription>{evidence.length} candidates</CardDescription>
+          <CardTitle>Interview</CardTitle>
+          <CardDescription>Interview #{summary.interviewId}</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-2">
-            {evidence.map((e) => (
-              <button
-                key={e.id}
-                onClick={() => setSelectedEvidence(e)}
-                className={`w-full text-left rounded-lg border p-3 transition-colors ${
-                  selectedEvidence?.id === e.id
-                    ? 'border-primary bg-primary/10'
-                    : 'border-border hover:bg-muted'
-                }`}
-              >
-                <p className="font-medium text-sm">{e.candidateName}</p>
-                <p className="text-xs text-muted-foreground">{e.jobTitle}</p>
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="text-xs font-mono font-bold">{e.behavioralScore}%</div>
-                  <div className="h-1 flex-1 rounded-full bg-border">
-                    <div
-                      className="h-full bg-blue-500 rounded-full"
-                      style={{ width: `${e.behavioralScore}%` }}
-                    />
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
+        <CardContent className="space-y-2 text-sm">
+          <p className="font-medium">{summary.candidateName}</p>
+          <p className="text-muted-foreground">{summary.jobTitle}</p>
+          <p className="text-muted-foreground">{summary.company}</p>
+          <p className="capitalize text-muted-foreground">Status: {summary.status}</p>
         </CardContent>
       </Card>
 
-      {/* Evidence Details */}
       <Card className="lg:col-span-2">
         <CardHeader>
-          <div className="flex items-start justify-between">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <CardTitle>{currentEvidence.candidateName}</CardTitle>
-              <CardDescription>{currentEvidence.jobTitle}</CardDescription>
+              <CardTitle>{summary.candidateName}</CardTitle>
+              <CardDescription>{summary.jobTitle}</CardDescription>
             </div>
-            <div className={`rounded-full border px-3 py-1 text-xs font-medium ${riskColor[currentEvidence.riskLevel]}`}>
-              {riskLabel[currentEvidence.riskLevel]}
+            <div className={`rounded-full border px-3 py-1 text-xs font-medium ${riskColor[riskLevel]}`}>
+              {riskLabel[riskLevel]}
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          {/* Interview Stats */}
           <div className="grid grid-cols-3 gap-3">
             <div className="rounded-lg border border-border bg-muted p-3">
-              <p className="text-xs text-muted-foreground">Duration</p>
-              <p className="mt-1 font-mono text-sm font-bold">
-                {Math.floor(currentEvidence.duration / 60)}:{(currentEvidence.duration % 60).toString().padStart(2, '0')}
-              </p>
+              <p className="text-xs text-muted-foreground">Risk Score</p>
+              <p className="mt-1 font-mono text-sm font-bold">{summary.riskScore ?? 'N/A'}</p>
             </div>
             <div className="rounded-lg border border-border bg-muted p-3">
-              <p className="text-xs text-muted-foreground">Behavioral Score</p>
-              <p className="mt-1 font-mono text-sm font-bold">{currentEvidence.behavioralScore}%</p>
+              <p className="text-xs text-muted-foreground">Interview Score</p>
+              <p className="mt-1 font-mono text-sm font-bold">{summary.interviewScore ?? 'N/A'}</p>
             </div>
             <div className="rounded-lg border border-border bg-muted p-3">
-              <p className="text-xs text-muted-foreground">Status</p>
-              <p className="mt-1 text-sm font-bold capitalize">{currentEvidence.status}</p>
+              <p className="text-xs text-muted-foreground">Proctoring Events</p>
+              <p className="mt-1 font-mono text-sm font-bold">{summary.events.length}</p>
             </div>
           </div>
 
-          {/* Behavioral Signals */}
-          <div>
-            <p className="text-sm font-medium mb-2">Behavioral Signals</p>
+          {summary.events.length > 0 ? (
             <div className="space-y-2">
-              {currentEvidence.signals.map((signal) => (
-                <div key={signal.type} className="flex items-center gap-3">
-                  <span className="text-xs font-medium w-20">{signal.type}</span>
-                  <div className="flex-1 h-2 rounded-full bg-border overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500"
-                      style={{ width: `${signal.value}%` }}
-                    />
+              <p className="text-sm font-medium">Proctoring Events</p>
+              {summary.events.map((event, index) => (
+                <div key={`${event.timestamp}-${index}`} className="rounded-md border p-3 text-sm space-y-3">
+                  <div>
+                    <p className="font-medium">{event.event_type.replace(/_/g, ' ')}</p>
+                    <p className="text-muted-foreground">
+                      {event.severity} · {new Date(event.timestamp).toLocaleString()}
+                    </p>
                   </div>
-                  <span className="text-xs font-mono w-8 text-right">{signal.value}%</span>
+                  {event.snapshot_url && (
+                    <img
+                      src={event.snapshot_url}
+                      alt={`Proctoring snapshot for ${event.event_type}`}
+                      className="max-h-48 rounded-md border object-contain"
+                    />
+                  )}
+                  {event.clip_url && (
+                    <video
+                      src={event.clip_url}
+                      controls
+                      className="max-h-48 w-full rounded-md border"
+                    />
+                  )}
                 </div>
               ))}
             </div>
-          </div>
+          ) : (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              No proctoring events recorded for this interview yet.
+            </div>
+          )}
 
-          {/* Transcript */}
           <div className="rounded-lg border border-border bg-muted/50 p-4">
             <p className="text-sm font-medium mb-2">Transcript Snippet</p>
-            <p className="text-sm text-muted-foreground italic">&quot;{currentEvidence.transcriptSnippet}&quot;</p>
+            <p className="text-sm text-muted-foreground italic">
+              {summary.transcriptSnippet
+                ? `"${summary.transcriptSnippet}"`
+                : 'Transcript will appear after the candidate completes the interview.'}
+            </p>
           </div>
 
-          {/* Reviewer Decision */}
           <div className="space-y-3">
             <p className="text-sm font-medium">Your Assessment</p>
             <textarea
@@ -177,7 +165,7 @@ export default function EvidenceReview() {
             <div className="flex gap-2">
               <Button
                 variant={decision === 'pass' ? 'default' : 'outline'}
-                onClick={() => setDecision('pass')}
+                onClick={() => applyDecision('pass')}
                 className="flex-1"
               >
                 <ThumbsUp className="mr-2 size-4" />
@@ -185,7 +173,7 @@ export default function EvidenceReview() {
               </Button>
               <Button
                 variant={decision === 'reject' ? 'destructive' : 'outline'}
-                onClick={() => setDecision('reject')}
+                onClick={() => applyDecision('reject')}
                 className="flex-1"
               >
                 <ThumbsDown className="mr-2 size-4" />
@@ -193,12 +181,16 @@ export default function EvidenceReview() {
               </Button>
             </div>
 
+            {message && <p className="text-sm text-muted-foreground">{message}</p>}
+
             {decision && (
-              <div className={`rounded-lg border p-3 text-xs font-medium ${
-                decision === 'pass'
-                  ? 'border-green-200 bg-green-50 text-green-700'
-                  : 'border-red-200 bg-red-50 text-red-700'
-              }`}>
+              <div
+                className={`rounded-lg border p-3 text-xs font-medium ${
+                  decision === 'pass'
+                    ? 'border-green-200 bg-green-50 text-green-700'
+                    : 'border-red-200 bg-red-50 text-red-700'
+                }`}
+              >
                 <div className="flex items-center gap-2">
                   {decision === 'pass' ? (
                     <CheckCircle className="size-4" />
@@ -207,10 +199,19 @@ export default function EvidenceReview() {
                   )}
                   {decision === 'pass'
                     ? 'Ready to advance to next stage'
-                    : 'Will not advance at this time'}
+                    : 'Marked as not a fit for this stage'}
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="flex gap-2">
+            <Link
+              href="/recruiter"
+              className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+            >
+              Back to dashboard
+            </Link>
           </div>
         </CardContent>
       </Card>

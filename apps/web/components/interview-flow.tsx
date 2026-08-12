@@ -25,6 +25,7 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
   const [interviewData, setInterviewData] = useState<InterviewData | null>(null)
   const [intervalId, setIntervalId] = useState<NodeJS.Timeout | null>(null)
   const [statusMessage, setStatusMessage] = useState({ message: 'Loading...', showJoinButton: false })
+  const [blockedMessage, setBlockedMessage] = useState<string | null>(null)
 
   // Fetch interview details on mount and when interviewId changes
   useEffect(() => {
@@ -33,7 +34,12 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
         const data = await interviewService.getInterviewDetails(interviewId)
         setInterviewData(data)
 
-        // Update status message based on current time
+        if (data.joinBlockReason || !data.canJoin) {
+          setBlockedMessage(data.joinBlockReason ?? 'This interview is not available to join.')
+          setStatusMessage({ message: data.joinBlockReason ?? 'Unavailable', showJoinButton: false })
+          return
+        }
+
         const status = interviewService.getStatusMessage(data.scheduledAt, data.durationMinutes)
         setStatusMessage(status)
       } catch (error) {
@@ -61,6 +67,24 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
       }
     }
   }, [interviewId])
+
+  if (blockedMessage) {
+    return (
+      <div className="max-w-3xl mx-auto">
+        <Card>
+          <CardHeader>
+            <CardTitle>Interview unavailable</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-base text-muted-foreground">{blockedMessage}</p>
+            <Button onClick={onComplete} className="w-full">
+              Return to Lobby
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
 
   const renderStep = () => {
     switch (step) {

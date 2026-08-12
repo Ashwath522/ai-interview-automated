@@ -13,9 +13,13 @@ export async function POST(request: Request) {
   const sessionId = String(body.session_id ?? '')
   if (!sessionId) return NextResponse.json({ error: 'session_id required' }, { status: 400 })
 
+  const prev = proctoringStore.risks.get(sessionId) as { score?: number } | undefined
+  const incoming = Number(body.score ?? 0)
+  const score = Math.max(incoming, Number(prev?.score ?? 0))
+
   const risk = {
     session_id: sessionId,
-    score: Number(body.score ?? 0),
+    score,
     level: body.level ?? 'low',
     breakdown: body.breakdown ?? {},
     evidence_count: Number(body.evidenceCount ?? body.evidence_count ?? 0),

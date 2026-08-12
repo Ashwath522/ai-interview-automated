@@ -5,11 +5,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AlertTriangle, CheckCircle2, BarChart3, Activity, Users, Shield } from 'lucide-react'
-import { useSession } from '@/lib/auth-client'
 import { isAdmin as checkIsAdmin } from '@/app/actions/core'
 
 export default function AdminPage() {
-  const { data: session } = useSession()
   const [stats, setStats] = useState<any>(null)
   const [retentionSettings, setRetentionSettings] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -33,11 +31,6 @@ export default function AdminPage() {
     let isCancelled = false
 
     const loadAdminData = async () => {
-      if (!session) {
-        setLoading(false)
-        return
-      }
-
       try {
         const adminOk = await checkIsAdmin()
         if (!adminOk) {
@@ -45,19 +38,14 @@ export default function AdminPage() {
           return
         }
 
-        // Load stats
-        const statsResponse = await fetch('/api/admin/stats', {
-          headers: { 'X-User-ID': session.user.id },
-        })
+        const statsResponse = await fetch('/api/admin/stats')
         if (statsResponse.ok) {
           const statsData = await statsResponse.json()
           if (!isCancelled) setStats(statsData)
         }
 
         // Load retention settings
-        const retentionResponse = await fetch('/api/admin/retention', {
-          headers: { 'X-User-ID': session.user.id },
-        })
+        const retentionResponse = await fetch('/api/admin/retention')
         if (retentionResponse.ok) {
           const retentionData = await retentionResponse.json()
           if (!isCancelled) setRetentionSettings(retentionData)
@@ -76,7 +64,7 @@ export default function AdminPage() {
     return () => {
       isCancelled = true
     }
-  }, [session])
+  }, [])
 
   const handleUpdateRetention = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -90,7 +78,6 @@ export default function AdminPage() {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
-          'X-User-ID': session?.user?.id || '',
         },
         body: JSON.stringify({ retention_days: retentionDays }),
       })
@@ -112,7 +99,7 @@ export default function AdminPage() {
     try {
       const response = await fetch('/api/admin/retention/run', {
         method: 'POST',
-        headers: { 'X-User-ID': session?.user?.id || '' },
+        headers: { 'Content-Type': 'application/json' },
       })
 
       if (response.ok) {
@@ -122,9 +109,7 @@ export default function AdminPage() {
           `Retention job completed: ${data.deleted_count} files deleted, ${data.retained_count} retained`,
           'success',
         )
-        const retentionResponse = await fetch('/api/admin/retention', {
-          headers: { 'X-User-ID': session?.user?.id || '' },
-        })
+        const retentionResponse = await fetch('/api/admin/retention')
         if (retentionResponse.ok) {
           setRetentionSettings(await retentionResponse.json())
         }
@@ -142,16 +127,6 @@ export default function AdminPage() {
       <div className="min-h-screen bg-background p-6 flex flex-col items-center justify-center">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
         <p className="mt-4 text-muted-foreground">Loading admin dashboard…</p>
-      </div>
-    )
-  }
-
-  if (!session?.user?.id) {
-    return (
-      <div className="min-h-screen bg-background p-6 flex flex-col items-center justify-center">
-        <AlertTriangle className="h-12 w-12 text-destructive mb-4" />
-        <h2 className="text-xl font-bold mb-2">Access Denied</h2>
-        <p className="text-muted-foreground">Please sign in to access the admin dashboard.</p>
       </div>
     )
   }

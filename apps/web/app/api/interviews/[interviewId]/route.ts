@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { interview, job, pipeline, recruiterProfile } from '@/lib/db/schema'
 import { eq } from 'drizzle-orm'
+import { canCandidateJoinInterview, joinBlockReason } from '@/lib/interview-access'
 
 export async function GET(
   _request: Request,
@@ -41,6 +42,12 @@ export async function GET(
   const durationMs = durationMinutes * 60 * 1000
   const windowStart = scheduledTime - 15 * 60 * 1000
   const windowEnd = scheduledTime + durationMs + 5 * 60 * 1000
+  const join = canCandidateJoinInterview({
+    status: row.status ?? 'scheduled',
+    scheduledAt,
+    durationMinutes,
+    now,
+  })
 
   return NextResponse.json({
     id: row.id,
@@ -49,7 +56,8 @@ export async function GET(
     scheduledAt,
     durationMinutes,
     status: row.status,
-    canJoin: now >= windowStart && now <= windowEnd,
+    canJoin: join.allowed,
+    joinBlockReason: join.reason ?? joinBlockReason(row.status ?? 'scheduled'),
     timeToStart: scheduledTime - now,
     timeUntilEnd: scheduledTime + durationMs - now,
     windowStart: windowStart - now,

@@ -14,6 +14,8 @@ type CandidateInterview = {
   scheduledAt: string
   status: string
   durationMinutes: number
+  canAttend: boolean
+  blockReason: string | null
 }
 
 export function CandidateLobby() {
@@ -27,8 +29,30 @@ export function CandidateLobby() {
       .finally(() => setLoading(false))
   }, [])
 
+  const attendable = upcomingInterviews.filter((interview) => interview.canAttend)
+  const closed = upcomingInterviews.filter((interview) => !interview.canAttend)
+
   if (selectedInterview) {
     const interview = upcomingInterviews.find((i) => i.id === selectedInterview)
+    if (interview && !interview.canAttend) {
+      return (
+        <main className="min-h-screen bg-background">
+          <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Interview unavailable</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  {interview.blockReason ?? 'This interview cannot be joined.'}
+                </p>
+                <Button onClick={() => setSelectedInterview(null)}>Back to lobby</Button>
+              </CardContent>
+            </Card>
+          </div>
+        </main>
+      )
+    }
     if (interview) {
       return (
         <main className="min-h-screen bg-background">
@@ -36,7 +60,10 @@ export function CandidateLobby() {
             <InterviewFlow
               interviewId={String(selectedInterview)}
               jobTitle={interview.jobTitle}
-              onComplete={() => setSelectedInterview(null)}
+              onComplete={() => {
+                setSelectedInterview(null)
+                getCandidateInterviews().then(setUpcomingInterviews)
+              }}
             />
           </div>
         </main>
@@ -51,7 +78,6 @@ export function CandidateLobby() {
           <div>
             <h1 className="text-3xl font-bold">Interview Lobby</h1>
             <p className="mt-2 text-muted-foreground">Your upcoming interviews</p>
-            <p className="mt-2 inline-block rounded-full bg-green-100 px-3 py-1 text-xs font-medium text-green-700">Demo Mode: Candidate 102</p>
           </div>
         </div>
 
@@ -83,14 +109,14 @@ export function CandidateLobby() {
         <div className="space-y-4">
           <h2 className="text-xl font-semibold">Your Upcoming Interviews</h2>
           {loading && <p className="text-sm text-muted-foreground">Loading interviews...</p>}
-          {!loading && upcomingInterviews.length === 0 && (
+          {!loading && attendable.length === 0 && closed.length === 0 && (
             <Card>
               <CardContent className="py-6 text-sm text-muted-foreground">
                 No interviews are scheduled for your account yet.
               </CardContent>
             </Card>
           )}
-          {upcomingInterviews.map((interview) => (
+          {attendable.map((interview) => (
             <Card key={interview.id}>
               <CardHeader>
                 <div className="flex items-start justify-between">
@@ -109,36 +135,41 @@ export function CandidateLobby() {
                   {new Date(interview.scheduledAt).toLocaleString()}
                 </div>
 
-                <div className="rounded-lg bg-muted p-4">
-                  <h4 className="font-medium text-sm mb-2">What to Expect</h4>
-                  <ul className="space-y-2 text-sm text-muted-foreground">
-                    <li className="flex gap-2">
-                      <FileTextIcon className="size-4 shrink-0 mt-0.5" />
-                      <span>Initial screening and role overview (5 min)</span>
-                    </li>
-                    <li className="flex gap-2">
-                      <FileTextIcon className="size-4 shrink-0 mt-0.5" />
-                      <span>Technical or case discussion (20 min)</span>
-                    </li>
-                    <li className="flex gap-2">
-                      <FileTextIcon className="size-4 shrink-0 mt-0.5" />
-                      <span>Your questions and closing remarks (5 min)</span>
-                    </li>
-                  </ul>
-                </div>
-
-                <Button 
-                  className="w-full"
-                  onClick={() => {
-                    setSelectedInterview(interview.id)
-                  }}
-                  disabled={interview.status === 'completed' || interview.status === 'cancelled'}
-                >
-                  {interview.status === "completed" ? "Completed" : "Enter Interview Room"}
+                <Button className="w-full" onClick={() => setSelectedInterview(interview.id)}>
+                  Enter Interview Room
                 </Button>
               </CardContent>
             </Card>
           ))}
+
+          {closed.length > 0 && (
+            <>
+              <h3 className="text-lg font-medium pt-2">Past / closed interviews</h3>
+              {closed.map((interview) => (
+                <Card key={interview.id} className="opacity-80">
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle className="text-lg">{interview.jobTitle}</CardTitle>
+                        <CardDescription>{interview.company}</CardDescription>
+                      </div>
+                      <span className="inline-block rounded-full bg-muted px-3 py-1 text-xs font-medium capitalize">
+                        {interview.status}
+                      </span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex flex-col gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      {interview.blockReason ?? 'This interview is no longer available.'}
+                    </p>
+                    <Button className="w-full" disabled>
+                      {interview.status === 'completed' ? 'Completed' : 'Unavailable'}
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </>
+          )}
         </div>
 
         <Card className="mt-8 bg-muted">
@@ -148,7 +179,7 @@ export function CandidateLobby() {
           <CardContent className="space-y-3 text-sm">
             <p>
               CoreLink records interviews with your consent to help interviewers provide fair
-              feedback. You can review what was recorded after your interview.
+              feedback. Proctoring snapshots are shared only with the hiring team.
             </p>
             <p className="text-muted-foreground">
               Your interview data is stored securely and deleted after 90 days unless you request

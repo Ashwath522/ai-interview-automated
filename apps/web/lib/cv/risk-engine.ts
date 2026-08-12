@@ -1,24 +1,23 @@
 /**
  * Risk engine — connects real CV signals to a weighted risk score.
- * Replaces the previous stub that always returned score=10.
+ * High risk requires corroboration except phone/spoof standalone signals.
  */
 
 export type ProctoringEvent = {
   type: string
   severity: 'low' | 'medium' | 'high'
-  metadata: Record<string, any>
+  metadata: Record<string, unknown>
   timestamp: string
 }
 
 export type RiskOutput = {
-  score: number // 0-100, higher is higher risk
+  score: number
   level: 'low' | 'medium' | 'high'
   breakdown: Record<string, number>
   evidenceCount: number
   timestamp: number
 }
 
-// Signal weights — tuned so no single signal triggers "high" alone
 const SIGNAL_WEIGHTS: Record<string, number> = {
   phoneDetected: 35,
   multipleFaces: 30,
@@ -30,22 +29,30 @@ const SIGNAL_WEIGHTS: Record<string, number> = {
   slouching: 8,
   leaning: 6,
   darkLighting: 12,
-  // Negative / dampening signals — reduce score
   continuousFaceVisible: -5,
   goodLighting: -3,
 }
 
-// Minimum corroborating signals needed before high risk is declared
-// (except for spoof which stands alone)
+const STANDALONE_HIGH_SIGNALS = new Set(['phoneDetected', 'spoofSuspected'])
+
+const CONCERN_SIGNALS = [
+  'multipleFaces',
+  'faceLeftFrame',
+  'personAbsent',
+  'repeatedOffScreenGaze',
+  'longDownwardGaze',
+  'slouching',
+  'leaning',
+  'darkLighting',
+] as const
+
 const HIGH_RISK_THRESHOLD = 60
 const MEDIUM_RISK_THRESHOLD = 30
 
-/**
- * Calculate a risk score from live CV signals + recent proctoring events.
- *
- * @param params.currentSignals  Boolean/numeric values from detectors this frame
- * @param params.events          Recent proctoring events (last 5 min)
- */
+function countActiveConcerns(signals: Record<string, boolean | number>): number {
+  return CONCERN_SIGNALS.filter((key) => signals[key] === true || signals[key] === 1).length
+}
+
 export function calculateRiskScore(params: {
   events: ProctoringEvent[]
   currentSignals: Record<string, boolean | number>
@@ -55,7 +62,6 @@ export function calculateRiskScore(params: {
   const breakdown: Record<string, number> = {}
   let rawScore = 0
 
-  // --- Signal-based score ---
   for (const [signal, weight] of Object.entries(SIGNAL_WEIGHTS)) {
     const value = currentSignals[signal]
     if (value === true || value === 1) {
@@ -64,27 +70,34 @@ export function calculateRiskScore(params: {
     }
   }
 
-  // --- Event-based boost: recent high-severity events add extra weight ---
   const now = Date.now()
   const recentHighSeverity = events.filter(
-    (e) =>
-      e.severity === 'high' &&
-      now - new Date(e.timestamp).getTime() < 60_000 // last 60s
+    (event) =>
+      event.severity === 'high' && now - new Date(event.timestamp).getTime() < 60_000,
   ).length
   const eventBoost = Math.min(recentHighSeverity * 5, 20)
   if (eventBoost > 0) {
-    breakdown['recentHighSeverityEvents'] = eventBoost
+    breakdown.recentHighSeverityEvents = eventBoost
     rawScore += eventBoost
   }
 
-  // Clamp to 0–100
-  const score = Math.min(100, Math.max(0, Math.round(rawScore)))
+  let score = Math.min(100, Math.max(0, Math.round(rawScore)))
+
+  const standaloneHigh = [...STANDALONE_HIGH_SIGNALS].some(
+    (signal) => currentSignals[signal] === true || currentSignals[signal] === 1,
+  )
+  const concernCount = countActiveConcerns(currentSignals)
+  const corroborated = standaloneHigh || concernCount >= 2 || recentHighSeverity >= 1
 
   let level: 'low' | 'medium' | 'high' = 'low'
-  if (score >= HIGH_RISK_THRESHOLD) {
+  if (score >= HIGH_RISK_THRESHOLD && corroborated) {
     level = 'high'
-  } else if (score >= MEDIUM_RISK_THRESHOLD) {
+  } else if (score >= MEDIUM_RISK_THRESHOLD || (score >= HIGH_RISK_THRESHOLD && !corroborated)) {
     level = 'medium'
+    if (score >= HIGH_RISK_THRESHOLD && !corroborated) {
+      score = MEDIUM_RISK_THRESHOLD + 15
+      breakdown.corroborationCap = score
+    }
   }
 
   return {
@@ -95,3 +108,14 @@ export function calculateRiskScore(params: {
     timestamp: now,
   }
 }
+
+export const HIGH_SEVERITY_EVENT_TYPES = new Set([
+  'phone_detected',
+  'multiple_faces',
+  'face_left_frame',
+  'person_absent_from_frame',
+  'spoof_suspected',
+  'liveness_failed',
+  'extra_person',
+  'looking_behind',
+])
