@@ -24,6 +24,7 @@ import {
 import { canCandidateJoinInterview, joinBlockReason } from '@/lib/interview-access'
 import { getEventsForInterview, proctoringStore } from '@/lib/proctoring-store'
 import { decideNextInterviewStep, type InterviewStepResult } from '@/lib/llm/interviewer'
+import { sendEmail, shortlistedEmail, interviewScheduledEmail } from '@/lib/email'
 
 /**
  * Resolve the current user id from the Better Auth session.
@@ -323,10 +324,41 @@ export async function moveToShortlist(interviewId: number): Promise<{ ok: boolea
 
     const { candidateId, jobId } = rows[0]
 
+    // Update pipeline stage
     await db
       .update(pipeline)
       .set({ stage: 'shortlist', updatedAt: new Date() })
       .where(and(eq(pipeline.candidateId, candidateId), eq(pipeline.jobId, jobId)))
+
+    // Fetch candidate email, name, job title, and recruiter org name for email
+    try {
+      const emailData = await db
+        .select({
+          candidateEmail: user.email,
+          candidateName: candidateProfile.fullName,
+          jobTitle: job.title,
+          orgName: recruiterProfile.organizationName,
+        })
+        .from(pipeline)
+        .innerJoin(candidateProfile, eq(pipeline.candidateId, candidateProfile.id))
+        .innerJoin(user, eq(candidateProfile.userId, user.id))
+        .innerJoin(job, eq(pipeline.jobId, job.id))
+        .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+        .where(and(eq(pipeline.candidateId, candidateId), eq(pipeline.jobId, jobId)))
+        .limit(1)
+
+      if (emailData[0]) {
+        const { candidateEmail, candidateName, jobTitle, orgName } = emailData[0]
+        const emailTemplate = shortlistedEmail(candidateName ?? '', jobTitle ?? '', orgName ?? '')
+        await sendEmail({
+          to: candidateEmail ?? '',
+          subject: emailTemplate.subject,
+          html: emailTemplate.html,
+        })
+      }
+    } catch (emailError) {
+      console.error('Failed to send shortlist email:', emailError)
+    }
 
     await db.insert(auditLog).values({
       userId,
@@ -748,6 +780,38 @@ export async function scheduleInterviewBatch(params: {
         .set({ interviewId: interviewRows[0].id, updatedAt: new Date() })
         .where(eq(pipeline.id, pipelineRows[0].id))
       created.push(interviewRows[0].id)
+
+      // Send interview scheduled email
+      try {
+        const emailData = await db
+          .select({
+            candidateEmail: user.email,
+            candidateName: candidateProfile.fullName,
+            jobTitle: job.title,
+            orgName: recruiterProfile.organizationName,
+          })
+          .from(candidateProfile)
+          .innerJoin(user, eq(candidateProfile.userId, user.id))
+          .where(eq(candidateProfile.id, candidateId))
+          .limit(1)
+
+        if (emailData[0]) {
+          const { candidateEmail, candidateName, jobTitle, orgName } = emailData[0]
+          const emailTemplate = interviewScheduledEmail(
+            candidateName ?? '',
+            jobTitle ?? '',
+            orgName ?? '',
+            new Date(params.scheduledAt),
+          )
+          await sendEmail({
+            to: candidateEmail ?? '',
+            subject: emailTemplate.subject,
+            html: emailTemplate.html,
+          })
+        }
+      } catch (emailError) {
+        console.error('Failed to send interview scheduled email:', emailError)
+      }
     }
 
     await db.insert(auditLog).values({

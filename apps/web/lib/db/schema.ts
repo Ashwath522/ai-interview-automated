@@ -108,6 +108,7 @@ export const interview = pgTable('interview', {
   scheduledAt: timestamp('scheduledAt').notNull(),
   startedAt: timestamp('startedAt'),
   completedAt: timestamp('completedAt'),
+  reminderSentAt: timestamp('reminderSentAt'),
   durationMinutes: integer('durationMinutes'),
   roomUrl: text('roomUrl'),
   questionSet: jsonb('questionSet'), // copied from job batch at schedule time
