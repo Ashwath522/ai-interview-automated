@@ -45,46 +45,7 @@ Rules:
 
 const TRANSITIONS = ['Okay.', 'Got it.', "Let's go one level deeper."]
 
-function parseStepResponse(raw: string): InterviewStepResult | null {
-  try {
-    // Try direct parse first
-    let parsedObj: Record<string, unknown> | null = null
-    try {
-      parsedObj = JSON.parse(raw)
-    } catch {
-      // Attempt to extract first JSON object substring from model output
-      const match = raw.match(/\{[\s\S]*\}/)
-      if (match) {
-        try {
-          parsedObj = JSON.parse(match[0])
-        } catch {
-          parsedObj = null
-        }
-      }
-    }
-    const parsed = parsedObj as { action?: string; question?: string }
-    const question = parsed.question?.trim()
-    if (!question || question.length < 8) return null
-
-    if (parsed.action === 'follow_up') {
-      return { action: 'follow_up', question: sanitizeQuestion(question) }
-    }
-    if (parsed.action === 'next_base') {
-      return { action: 'next_base', question: sanitizeQuestion(question) }
-    }
-  } catch {
-    // fall through
-  }
-  return null
-}
-
-function sanitizeQuestion(question: string): string {
-  return question
-    .replace(/^["']|["']$/g, '')
-    .replace(/\*\*|__|`/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
+import { parseStepResponse, sanitizeQuestion } from './parse-step'
 
 function referenceFromAnswer(answer: string): string {
   const trimmed = answer.trim()
@@ -195,14 +156,14 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     const parsed = parseStepResponse(raw)
     if (parsed) {
       if (parsed.action === 'follow_up') {
-        return parsed
+        return { action: 'follow_up', question: sanitizeQuestion(parsed.question ?? '') }
       }
       if (parsed.action === 'next_base') {
         if (isLastBase) return { action: 'complete' }
         const nextIndex = params.baseQuestionIndex + 1
         return {
           action: 'next_base',
-          question: nextBaseQuestion ?? parsed.question,
+          question: sanitizeQuestion(parsed.question ?? nextBaseQuestion ?? ''),
           nextBaseIndex: nextIndex,
         }
       }
@@ -211,3 +172,5 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
 
   return heuristicNextStep(params, candidateStyle)
 }
+
+// parsing helper is in ./parse-step for unit tests

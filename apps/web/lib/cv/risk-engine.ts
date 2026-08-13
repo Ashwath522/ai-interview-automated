@@ -19,9 +19,9 @@ export type RiskOutput = {
 }
 
 const SIGNAL_WEIGHTS: Record<string, number> = {
-  phoneDetected: 35,
+  phoneDetected: 50,
   multipleFaces: 30,
-  spoofSuspected: 30,
+  spoofSuspected: 50,
   faceLeftFrame: 20,
   personAbsent: 20,
   repeatedOffScreenGaze: 15,

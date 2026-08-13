@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { interview, job, pipeline, recruiterProfile } from '@/lib/db/schema'
-import { eq } from 'drizzle-orm'
+import { eq, and, or } from 'drizzle-orm'
+import { auth } from '@/lib/auth'
 import { canCandidateJoinInterview, joinBlockReason } from '@/lib/interview-access'
 
 export async function GET(
@@ -13,6 +14,9 @@ export async function GET(
   if (!Number.isFinite(id)) {
     return NextResponse.json({ error: 'Invalid interview id' }, { status: 400 })
   }
+
+  const session = await auth.api.getSession({ headers: _request.headers })
+  if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const rows = await db
     .select({
@@ -27,7 +31,7 @@ export async function GET(
     .innerJoin(pipeline, eq(interview.pipelineId, pipeline.id))
     .innerJoin(job, eq(pipeline.jobId, job.id))
     .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
-    .where(eq(interview.id, id))
+    .where(and(eq(interview.id, id), or(eq(interview.userId, session.user.id), eq(interview.recruiterId, session.user.id))))
     .limit(1)
 
   if (!rows.length) {
