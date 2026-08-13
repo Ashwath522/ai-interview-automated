@@ -83,9 +83,36 @@ export function calculateRiskScore(params: {
 
   let score = Math.min(100, Math.max(0, Math.round(rawScore)))
 
-  const standaloneHigh = [...STANDALONE_HIGH_SIGNALS].some(
-    (signal) => currentSignals[signal] === true || currentSignals[signal] === 1,
-  )
+  // For phoneDetected and spoofSuspected, require at least 2 occurrences in last 60s
+  // before treating them as standalone-high when there are no other corroborating concern signals.
+  let standaloneHigh = false
+  for (const signal of [...STANDALONE_HIGH_SIGNALS]) {
+    const present = currentSignals[signal] === true || currentSignals[signal] === 1
+    if (!present) continue
+
+    // Map internal signal name to emitted event type
+    const eventType = signal === 'phoneDetected' ? 'phone_detected' : signal === 'spoofSuspected' ? 'spoof_suspected' : null
+    let occurrences = 0
+    if (eventType) {
+      occurrences = events.filter(
+        (e) => e.type === eventType && now - new Date(e.timestamp).getTime() < 60_000,
+      ).length
+    }
+
+    const otherConcerns = countActiveConcerns(currentSignals)
+
+    // If there are other corroborating concern signals, allow standalone to count even if single occurrence
+    if (otherConcerns >= 1) {
+      standaloneHigh = true
+      break
+    }
+
+    // Otherwise require at least 2 occurrences in last 60s
+    if (occurrences >= 2) {
+      standaloneHigh = true
+      break
+    }
+  }
   const concernCount = countActiveConcerns(currentSignals)
   const corroborated = standaloneHigh || concernCount >= 2 || recentHighSeverity >= 1
 

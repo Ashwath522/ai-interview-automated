@@ -95,6 +95,7 @@ export default function LiveInterviewRoom({
     poseBaselineReady: false
   })
   const [isBaselineComplete, setIsBaselineComplete] = useState(false)
+  const [proctoringDegraded, setProctoringDegraded] = useState(false)
   const isBaselineCompleteRef = useRef(false)
   const [baseIndex, setBaseIndex] = useState(0)
   const [isFollowUp, setIsFollowUp] = useState(false)
@@ -575,7 +576,33 @@ export default function LiveInterviewRoom({
       await livenessAnalyzer.initialize()
       livenessAnalyzerRef.current = livenessAnalyzer
 
+      // set session id early so event logging can occur immediately
       sessionIdRef.current = `interview:${interviewId}`
+
+      // If any detector fell back to a lightweight stub, surface degraded mode
+      try {
+        const degradedDetectors: string[] = []
+        if (faceDetectorRef.current && (faceDetectorRef.current as any).usingFallback) degradedDetectors.push('faceDetector')
+        if (objectDetectorRef.current && (objectDetectorRef.current as any).usingFallback) degradedDetectors.push('objectDetector')
+        if (gazeHeadPoseEstimatorRef.current && (gazeHeadPoseEstimatorRef.current as any).usingFallback) degradedDetectors.push('gazeHeadPoseEstimator')
+        if (poseDetectorRef.current && (poseDetectorRef.current as any).usingFallback) degradedDetectors.push('poseDetector')
+        if (degradedDetectors.length > 0) {
+          setProctoringDegraded(true)
+          // Log a proctoring_degraded_mode event so the backend and audit log capture this
+          // Use fetchEvent to post a minimal event immediately
+          try {
+            fetch('/api/proctoring/events', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ session_id: sessionIdRef.current, event_type: 'proctoring_degraded_mode', severity: 'low', timestamp: new Date().toISOString(), metadata: { detectors: degradedDetectors } }),
+            }).catch(() => {})
+          } catch (e) {
+            // best-effort
+          }
+        }
+      } catch (err) {
+        console.error('Failed to evaluate degraded detectors', err)
+      }
 
       // Set up frame sampler
       const frameSampler = new FrameSampler(async (canvas) => {
@@ -1380,6 +1407,15 @@ export default function LiveInterviewRoom({
               <div className="size-2 animate-pulse rounded-full bg-green-400" />
               Connected
             </div>
+
+            {proctoringDegraded && (
+              <div className="absolute left-2 top-12 flex items-center gap-2 rounded-lg border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs text-yellow-800">
+                <AlertTriangle className="size-4 text-yellow-800" />
+                <div>
+                  <div className="font-medium">Proctoring is running in reduced mode due to a network issue — some checks may be limited.</div>
+                </div>
+              </div>
+            )}
 
             {/* Recording Indicator */}
             {isRecording && (

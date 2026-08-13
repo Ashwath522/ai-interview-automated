@@ -24,6 +24,7 @@ export interface GazeHeadPoseResult {
 }
 
 export class GazeHeadPoseEstimator {
+  public usingFallback: boolean = false;
   private initialized: boolean = false;
   private faceLandmarker: {
     detect: (frame: HTMLVideoElement | HTMLCanvasElement) => { faceLandmarks?: LandmarkPoint[][] }
@@ -51,6 +52,7 @@ export class GazeHeadPoseEstimator {
     } catch (error) {
       console.error('Failed to initialize MediaPipe FaceLandmarker:', error);
       // Fallback enabled so it does not block interview room
+      this.usingFallback = true
       this.initialized = true;
     }
   }

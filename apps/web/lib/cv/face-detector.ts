@@ -6,6 +6,7 @@ type FaceDetectorRuntime = {
 }
 
 export class FaceDetector {
+  public usingFallback: boolean = false;
   private initialized: boolean = false;
   private faceDetector: FaceDetectorRuntime | null = null;
 
@@ -29,6 +30,7 @@ export class FaceDetector {
     } catch (error) {
       console.error('Failed to initialize MediaPipe FaceDetector:', error);
       // Fallback enabled so it does not block interview room
+      this.usingFallback = true
       this.initialized = true;
     }
   }

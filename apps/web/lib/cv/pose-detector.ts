@@ -10,6 +10,7 @@ type PoseLandmarkerRuntime = {
 }
 
 export class PoseDetector {
+  public usingFallback: boolean = false;
   private initialized: boolean = false;
   private poseLandmarker: PoseLandmarkerRuntime | null = null;
 
@@ -34,6 +35,7 @@ export class PoseDetector {
     } catch (error) {
       console.error('Failed to initialize MediaPipe PoseLandmarker:', error);
       // Fallback enabled so it does not block interview room
+      this.usingFallback = true
       this.initialized = true;
     }
   }

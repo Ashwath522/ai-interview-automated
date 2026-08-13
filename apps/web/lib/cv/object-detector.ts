@@ -9,6 +9,7 @@ type ObjectDetectorRuntime = {
 }
 
 export class ObjectDetector {
+  public usingFallback: boolean = false;
   private initialized: boolean = false;
   private objectDetector: ObjectDetectorRuntime | null = null;
 
@@ -33,6 +34,7 @@ export class ObjectDetector {
     } catch (error) {
       console.error('Failed to initialize MediaPipe ObjectDetector:', error);
       // Fallback enabled so it does not block interview room
+      this.usingFallback = true
       this.initialized = true;
     }
   }
@@ -42,16 +44,13 @@ export class ObjectDetector {
       return [];
     }
     if (!this.objectDetector) {
-      // Fallback stub: always return person, occasional cell phone to simulate
+      // Fallback stub: always return person (do not fabricate additional objects)
       if (process.env.NODE_ENV !== 'production') {
         console.debug('ObjectDetector using fallback stub (model not loaded)')
       }
       const results: DetectedObject[] = [
-        { label: 'person', score: 0.9 + Math.random() * 0.1 }
+        { label: 'person', score: 0.9 }
       ];
-      if (Math.random() > 0.95) {
-        results.push({ label: 'cell phone', score: 0.8 + Math.random() * 0.2 });
-      }
       return results;
     }
     try {

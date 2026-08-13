@@ -787,19 +787,20 @@ export async function scheduleInterviewBatch(params: {
           .select({
             candidateEmail: user.email,
             candidateName: candidateProfile.fullName,
-            jobTitle: job.title,
             orgName: recruiterProfile.organizationName,
           })
           .from(candidateProfile)
           .innerJoin(user, eq(candidateProfile.userId, user.id))
+          .innerJoin(job, eq(job.id, params.jobId))
+          .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
           .where(eq(candidateProfile.id, candidateId))
           .limit(1)
 
         if (emailData[0]) {
-          const { candidateEmail, candidateName, jobTitle, orgName } = emailData[0]
+          const { candidateEmail, candidateName, orgName } = emailData[0]
           const emailTemplate = interviewScheduledEmail(
             candidateName ?? '',
-            jobTitle ?? '',
+            jobTitle,
             orgName ?? '',
             new Date(params.scheduledAt),
           )
