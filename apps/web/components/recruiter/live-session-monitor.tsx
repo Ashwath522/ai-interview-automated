@@ -68,10 +68,6 @@ function metricTone(active: boolean) {
   return active ? 'text-destructive' : 'text-muted-foreground'
 }
 
-function summaryLabel(value: boolean) {
-  return value ? 'Active' : 'Quiet'
-}
-
 export function LiveSessionMonitor({ initialSessionId, title, eyebrow, backHref, backLabel }: LiveSessionMonitorProps) {
   const [sessions, setSessions] = useState<LiveSession[]>([])
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId)

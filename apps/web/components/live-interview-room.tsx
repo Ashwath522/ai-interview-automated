@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, Mic, MicOff, Video, VideoOff, PhoneOff, Eye, Smile, AlertTriangle } from 'lucide-react'
+import { Mic, MicOff, Video, VideoOff, PhoneOff, Eye, Smile, AlertTriangle } from 'lucide-react'
 import { FrameSampler } from '@/lib/frame-sampler'
 import { FaceDetector } from '@/lib/cv/face-detector'
 import { ObjectDetector } from '@/lib/cv/object-detector'
@@ -290,7 +290,7 @@ export default function LiveInterviewRoom({
   const handleEventEmission = async (event: {
     type: string;
     severity: 'low' | 'medium' | 'high';
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
   }) => {
     const eventId = await fetchEvent(event)
     if (eventId === null) return
@@ -597,7 +597,7 @@ export default function LiveInterviewRoom({
           const newCVStatus = {
             faceDetected: (faceResult?.faceCount ?? 0) > 0,
             faceCount: faceResult?.faceCount ?? 0,
-            objects: objects?.map((obj: any) => obj.label) ?? []
+            objects: objects?.map((obj) => obj.label) ?? []
           }
           setCVStatus(newCVStatus)
           setGazeHeadPoseStatus({
@@ -842,7 +842,7 @@ export default function LiveInterviewRoom({
   const fetchEvent = async (event: {
     type: string;
     severity: 'low' | 'medium' | 'high';
-    metadata: Record<string, any>;
+    metadata: Record<string, unknown>;
   }): Promise<number | null> => {
     if (!sessionIdRef.current) return null
     try {
@@ -885,6 +885,8 @@ export default function LiveInterviewRoom({
 
   // Returns an array of pattern types that are currently active for gaze and head pose
   const getActiveGazeHeadPosePatterns = (currentGaze: GazeEstimate, currentHeadPose: HeadPose): string[] => {
+    void currentGaze
+    void currentHeadPose
     const activePatterns: string[] = []
 
     // Pattern 1: repeated off-screen gaze (looking away many times in the window)
@@ -948,6 +950,9 @@ export default function LiveInterviewRoom({
 
   // Returns an array of pattern types that are currently active for pose
   const getActivePosePatterns = (currentPoseScore: number, currentPersonPresent: boolean, currentShouldersVisible: boolean): string[] => {
+    void currentPoseScore
+    void currentPersonPresent
+    void currentShouldersVisible
     const activePatterns: string[] = []
 
     // Pattern 1: person absent from frame (no person detected for extended period)
@@ -1019,9 +1024,6 @@ export default function LiveInterviewRoom({
     if (!isBaselineComplete && poseSamplesRef.current.length >= BASELINE_SAMPLES_REQUIRED) {
       // Compute baseline from the collected samples (we'll use all samples collected so far)
       const poseScores = poseSamplesRef.current.map(s => s.poseScore)
-
-      // Compute average pose score
-      const avgPoseScore = poseScores.reduce((sum, s) => sum + s, 0) / poseScores.length
 
       // Compute pose score range (min/max)
       const poseScoreRange = {

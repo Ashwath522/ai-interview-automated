@@ -4,14 +4,19 @@ export interface PoseResult {
   shouldersVisible: boolean;
 }
 
+type PoseLandmarkerRuntime = {
+  detect: (frame: HTMLVideoElement | HTMLCanvasElement) => { landmarks?: Array<Array<{ visibility?: number }>> }
+  close: () => void
+}
+
 export class PoseDetector {
   private initialized: boolean = false;
-  private poseLandmarker: any = null;
+  private poseLandmarker: PoseLandmarkerRuntime | null = null;
 
   async initialize(): Promise<void> {
     if (typeof window === 'undefined') return;
     try {
-      // @ts-ignore
+      // @ts-expect-error - MediaPipe is loaded dynamically from a CDN and the package exposes no local TS declarations.
       const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/+esm");
       const filesetResolver = await vision.FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"

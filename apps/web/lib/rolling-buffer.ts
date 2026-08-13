@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { FrameSampler } from './frame-sampler'
 
 export interface RollingBufferReturn {
@@ -38,6 +38,7 @@ export function useRollingVideoBuffer(
   // Get a clip (as a Blob) of the last `seconds` seconds.
   // We return a blob of the most recent frame as a placeholder.
   const getClip = (seconds: number): Blob => {
+    void seconds
     // We'll just return a blob of a single frame (the most recent) as a placeholder.
     // In a real implementation, we would encode a video from the frame buffer.
     const mostRecent = frameBufferRef.current[frameBufferRef.current.length - 1]

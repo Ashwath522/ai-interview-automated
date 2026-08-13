@@ -8,12 +8,28 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
+type LiveSessionSummary = {
+  interview_id: number | string
+  session_id: string
+  candidate_name?: string
+  job_title?: string
+  risk_level?: string
+  status?: string
+  snapshot_url?: string | null
+  last_seen_at?: string
+}
+
+type SessionWithRoles = {
+  user?: {
+    roles?: string[]
+  }
+}
+
 export default function RecruiterLivePage() {
   const params = useParams() as { interviewId?: string }
   const interviewId = Number(params?.interviewId ?? 0)
   const { data: session } = useSession()
-  const [visibleSession, setVisibleSession] = useState<any | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [visibleSession, setVisibleSession] = useState<LiveSessionSummary | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -22,11 +38,10 @@ export default function RecruiterLivePage() {
 
     async function poll() {
       try {
-        setLoading(true)
         const listRes = await fetch('/api/proctoring/live', { cache: 'no-store' })
         if (!listRes.ok) throw new Error('Failed to fetch live list')
-        const list = await listRes.json()
-        const match = list.find((s: any) => Number(s.interview_id) === interviewId)
+        const list = (await listRes.json()) as LiveSessionSummary[]
+        const match = list.find((s) => Number(s.interview_id) === interviewId)
         if (!match) {
           if (mounted) setVisibleSession(null)
           return
@@ -42,8 +57,6 @@ export default function RecruiterLivePage() {
       } catch (err) {
         console.error(err)
         if (mounted) setError('Unable to load live view')
-      } finally {
-        if (mounted) setLoading(false)
       }
     }
 
@@ -56,7 +69,7 @@ export default function RecruiterLivePage() {
   }, [interviewId])
 
   // restrict to recruiter/admin only
-  const roles = (session as any)?.user?.roles ?? []
+  const roles = (session as SessionWithRoles | null | undefined)?.user?.roles ?? []
   if (!roles.includes('recruiter') && !roles.includes('admin')) {
     return (
       <main className="p-6">
@@ -110,7 +123,7 @@ export default function RecruiterLivePage() {
               <div className="aspect-video mb-3 bg-slate-900 rounded-md overflow-hidden">
                 {visibleSession.snapshot_url ? (
                   <img
-                    src={`${visibleSession.snapshot_url}?v=${encodeURIComponent(visibleSession.last_seen_at)}`}
+                    src={`${visibleSession.snapshot_url}?v=${encodeURIComponent(visibleSession.last_seen_at ?? new Date().toISOString())}`}
                     alt="live snapshot"
                     className="w-full h-full object-cover"
                   />
@@ -119,7 +132,7 @@ export default function RecruiterLivePage() {
                 )}
               </div>
 
-              <div className="text-sm text-muted-foreground">Updated {new Date(visibleSession.last_seen_at).toLocaleTimeString()}</div>
+              <div className="text-sm text-muted-foreground">Updated {visibleSession.last_seen_at ? new Date(visibleSession.last_seen_at).toLocaleTimeString() : 'just now'}</div>
             </div>
           </div>
         ) : (

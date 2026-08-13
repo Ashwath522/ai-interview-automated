@@ -12,7 +12,7 @@ export class LivenessAnalyzer {
     console.log('LivenessAnalyzer initialized');
   }
 
-  async analyze(frame: HTMLVideoElement | HTMLCanvasElement, faceLandmarks?: any): Promise<{
+  async analyze(frame: HTMLVideoElement | HTMLCanvasElement, faceLandmarks?: Array<{ x: number; y: number; z?: number; visibility?: number }> | null): Promise<{
     eyeAspectRatio: number;       // average eye aspect ratio (0-1, where lower indicates closed eyes)
     blinkRate: number;            // blinks per minute
     headMovementScore: number;    // 0-1, amount of head movement
@@ -37,7 +37,7 @@ export class LivenessAnalyzer {
       const rightOuter = faceLandmarks[263];
       const rightInner = faceLandmarks[362];
 
-      const getDist = (p1: any, p2: any) => p1 && p2 ? Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2) : 0.3;
+      const getDist = (p1: { x: number; y: number } | null | undefined, p2: { x: number; y: number } | null | undefined) => p1 && p2 ? Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2) : 0.3;
 
       const leftEAR = getDist(leftTop, leftBottom) / (getDist(leftOuter, leftInner) || 1);
       const rightEAR = getDist(rightTop, rightBottom) / (getDist(rightOuter, rightInner) || 1);

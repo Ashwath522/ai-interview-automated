@@ -3,14 +3,19 @@ export interface DetectedObject {
   score: number; // confidence 0-1
 }
 
+type ObjectDetectorRuntime = {
+  detect: (frame: HTMLVideoElement | HTMLCanvasElement) => { detections?: Array<{ categories?: Array<{ categoryName?: string; score?: number }> }> }
+  close: () => void
+}
+
 export class ObjectDetector {
   private initialized: boolean = false;
-  private objectDetector: any = null;
+  private objectDetector: ObjectDetectorRuntime | null = null;
 
   async initialize(): Promise<void> {
     if (typeof window === 'undefined') return;
     try {
-      // @ts-ignore
+      // @ts-expect-error - MediaPipe is loaded dynamically from a CDN and the package exposes no local TS declarations.
       const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/+esm");
       const filesetResolver = await vision.FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
@@ -58,7 +63,7 @@ export class ObjectDetector {
             const category = detection.categories[0];
             objects.push({
               label: category.categoryName || '',
-              score: category.score
+              score: category.score ?? 0
             });
           }
         }

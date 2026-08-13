@@ -48,7 +48,7 @@ const TRANSITIONS = ['Okay.', 'Got it.', "Let's go one level deeper."]
 function parseStepResponse(raw: string): InterviewStepResult | null {
   try {
     // Try direct parse first
-    let parsedObj: any = null
+    let parsedObj: Record<string, unknown> | null = null
     try {
       parsedObj = JSON.parse(raw)
     } catch {

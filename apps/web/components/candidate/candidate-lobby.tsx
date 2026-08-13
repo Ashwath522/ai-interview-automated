@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { CheckIcon, ClockIcon, FileTextIcon } from "lucide-react"
+import { CheckIcon, ClockIcon } from "lucide-react"
 import { InterviewFlow } from "@/components/interview-flow"
 import { getCandidateInterviews } from "@/app/actions/core"
 

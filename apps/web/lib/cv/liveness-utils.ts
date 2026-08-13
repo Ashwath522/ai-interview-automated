@@ -1,3 +1,5 @@
+type LandmarkPoint = { x: number; y: number; z?: number; visibility?: number }
+
 /**
  * Helper to calculate Euclidean distance between two 2D/3D points
  */
@@ -15,7 +17,7 @@ function getDistance(p1: { x: number; y: number }, p2: { x: number; y: number })
  */
 export function analyzeLiveness(
   frame: HTMLVideoElement | HTMLCanvasElement,
-  faceLandmarks: any = null,
+  faceLandmarks: LandmarkPoint[] | null = null,
   blinkHistory: number[] = [],
   headMovementHistory: number[] = []
 ): {
@@ -119,7 +121,7 @@ export function analyzeLiveness(
         // Higher texture variance → more likely real, lower → suspicious
         textureAnalysisScore = Number((0.25 + 0.75 * norm).toFixed(4))
       }
-    } catch (e) {
+    } catch {
       // fallback to prior heuristic if canvas fails
       textureAnalysisScore = 0.85 + Math.random() * 0.1
     }

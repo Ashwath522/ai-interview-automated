@@ -39,7 +39,7 @@ export function InterviewRoom({ interviewId, jobTitle, onEnd }: InterviewRoomPro
           store.setCameraReady(true)
           store.setMicReady(stream.getAudioTracks().length > 0)
         }
-      } catch (err) {
+      } catch {
         store.setErrorMessage('Failed to access media devices')
       }
     }
@@ -62,7 +62,7 @@ export function InterviewRoom({ interviewId, jobTitle, onEnd }: InterviewRoomPro
     }, 1000)
 
     if (videoRef.current && !frameSamplerRef.current) {
-      frameSamplerRef.current = new FrameSampler((canvas) => {
+      frameSamplerRef.current = new FrameSampler(() => {
         store.incrementFrameCount()
       })
       frameSamplerRef.current.start(videoRef.current)

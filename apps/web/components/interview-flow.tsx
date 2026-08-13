@@ -2,12 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import { MediaSetup } from './media-setup'
-import { InterviewRoom } from './interview-room'
 import LiveInterviewRoom from './live-interview-room'
 import BaselineCapture from './baseline-capture'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CheckIcon, ChevronRightIcon, ClockIcon } from 'lucide-react'
+import { CheckIcon, ChevronRightIcon } from 'lucide-react'
 import { interviewService, InterviewData } from '@/lib/interview-service'
 import { markInterviewStarted } from '@/app/actions/core'
 
@@ -21,7 +20,6 @@ type FlowStep = 'consent' | 'setup' | 'baseline' | 'interview' | 'complete'
 
 export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFlowProps) {
   const [step, setStep] = useState<FlowStep>('consent')
-  const [consentGiven, setConsentGiven] = useState(false)
   const [interviewData, setInterviewData] = useState<InterviewData | null>(null)
   const [intervalId, setIntervalId] = useState<NodeJS.Timeout | null>(null)
   const [statusMessage, setStatusMessage] = useState({ message: 'Loading...', showJoinButton: false })
@@ -142,7 +140,7 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
                   <div>
                     <p className="font-medium text-sm">Baseline Session</p>
                     <p className="text-sm text-muted-foreground mt-1">
-                      You'll complete a 45–60 second baseline session before the interview begins. This
+                      You&apos;ll complete a 45–60 second baseline session before the interview begins. This
                       helps establish your normal appearance and behavior.
                     </p>
                   </div>
@@ -162,7 +160,6 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
                 {interviewData ? (
                   <Button
                     onClick={() => {
-                      setConsentGiven(true)
                       setStep('setup')
                     }}
                     disabled={!statusMessage.showJoinButton}
@@ -183,7 +180,6 @@ export function InterviewFlow({ interviewId, jobTitle, onComplete }: InterviewFl
                 ) : (
                   <Button
                     onClick={() => {
-                      setConsentGiven(true)
                       setStep('setup')
                     }}
                     className="flex-1"

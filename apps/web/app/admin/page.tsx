@@ -1,15 +1,31 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AlertTriangle, CheckCircle2, BarChart3, Activity, Users, Shield } from 'lucide-react'
 import { isAdmin as checkIsAdmin } from '@/app/actions/core'
 
+type AdminStats = {
+  active_interviews?: number
+  total_storage_mb?: number
+  average_risk_score?: number | null
+  recent_errors?: number
+  high_risk_count?: number
+  review_recommended_count?: number
+  human_review_flags?: number
+}
+
+type RetentionSettings = {
+  retention_days?: number
+  last_run?: string
+  last_run_deleted_count?: number
+} | null
+
 export default function AdminPage() {
-  const [stats, setStats] = useState<any>(null)
-  const [retentionSettings, setRetentionSettings] = useState<any>(null)
+  const [stats, setStats] = useState<AdminStats | null>(null)
+  const [retentionSettings, setRetentionSettings] = useState<RetentionSettings>(null)
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<
     { id: string; title: string; description: string; type: 'default' | 'destructive' | 'success' }[]

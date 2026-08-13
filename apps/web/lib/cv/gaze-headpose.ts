@@ -1,3 +1,10 @@
+export type LandmarkPoint = {
+  x: number
+  y: number
+  z?: number
+  visibility?: number
+}
+
 export interface GazeEstimate {
   x: number; // normalized gaze x (-1 to 1, where 0 is center)
   y: number; // normalized gaze y (-1 to 1, where 0 is center)
@@ -13,17 +20,20 @@ export interface HeadPose {
 export interface GazeHeadPoseResult {
   gaze: GazeEstimate | null;
   headPose: HeadPose | null;
-  landmarks?: any;
+  landmarks?: LandmarkPoint[];
 }
 
 export class GazeHeadPoseEstimator {
   private initialized: boolean = false;
-  private faceLandmarker: any = null;
+  private faceLandmarker: {
+    detect: (frame: HTMLVideoElement | HTMLCanvasElement) => { faceLandmarks?: LandmarkPoint[][] }
+    close: () => void
+  } | null = null;
 
   async initialize(): Promise<void> {
     if (typeof window === 'undefined') return;
     try {
-      // @ts-ignore
+      // @ts-expect-error - MediaPipe is loaded dynamically from a CDN and the package exposes no local TS declarations.
       const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/+esm");
       const filesetResolver = await vision.FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"

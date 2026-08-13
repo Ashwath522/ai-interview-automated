@@ -41,7 +41,6 @@ export function analyzeLighting(
   const data = imageData.data;
 
   // Initialize accumulators
-  let sumR = 0, sumG = 0, sumB = 0;
   let sumBrightness = 0;
   let sumBrightnessSq = 0;
   const pixelCount = width * height;
@@ -56,9 +55,6 @@ export function analyzeLighting(
     // Calculate luminance using standard formula: 0.299*R + 0.587*G + 0.114*B
     const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
 
-    sumR += r;
-    sumG += g;
-    sumB += b;
     sumBrightness += luminance;
     sumBrightnessSq += luminance * luminance;
   }

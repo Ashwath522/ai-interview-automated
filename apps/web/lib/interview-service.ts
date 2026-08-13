@@ -65,7 +65,7 @@ export const interviewService = {
 
   // Get status message for candidate
   getStatusMessage(scheduledAt: string, durationMinutes: number): { message: string; showJoinButton: boolean } {
-    const { canJoin, timeToStart, timeUntilEnd } = this.canJoinInterview(scheduledAt, durationMinutes)
+    const { canJoin, timeToStart } = this.canJoinInterview(scheduledAt, durationMinutes)
     const now = Date.now()
     const scheduledTime = new Date(scheduledAt).getTime()
 

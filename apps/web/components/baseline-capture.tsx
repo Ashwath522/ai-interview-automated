@@ -36,10 +36,6 @@ export default function BaselineCapture({
     setIsCapturing(true)
   }
 
-  const skipCapture = () => {
-    onComplete()
-  }
-
   const percentComplete = ((duration - remainingSeconds) / duration) * 100
 
   return (

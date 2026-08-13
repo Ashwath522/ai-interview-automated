@@ -1,10 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { requestMediaPermissions, enumerateDevices } from '@/lib/media'
+import { requestMediaPermissions } from '@/lib/media'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { CheckIcon, AlertCircleIcon, CameraIcon, MicIcon } from 'lucide-react'
+import { CheckIcon, AlertCircleIcon, CameraIcon } from 'lucide-react'
 
 export function MediaSetup({ onReady }: { onReady: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -29,7 +29,7 @@ export function MediaSetup({ onReady }: { onReady: () => void }) {
           audio: false,
         })
         videoRef.current.srcObject = stream
-      } catch (err) {
+      } catch {
         setErrors((prev) => [...prev, 'Failed to access camera stream'])
       }
     }
@@ -55,7 +55,7 @@ export function MediaSetup({ onReady }: { onReady: () => void }) {
       <Card>
         <CardHeader>
           <CardTitle>Camera & Microphone Setup</CardTitle>
-          <CardDescription>Let's ensure your equipment is working correctly</CardDescription>
+          <CardDescription>Let&apos;s ensure your equipment is working correctly</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black">
