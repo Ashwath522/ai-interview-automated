@@ -47,7 +47,22 @@ const TRANSITIONS = ['Okay.', 'Got it.', "Let's go one level deeper."]
 
 function parseStepResponse(raw: string): InterviewStepResult | null {
   try {
-    const parsed = JSON.parse(raw) as { action?: string; question?: string }
+    // Try direct parse first
+    let parsedObj: any = null
+    try {
+      parsedObj = JSON.parse(raw)
+    } catch {
+      // Attempt to extract first JSON object substring from model output
+      const match = raw.match(/\{[\s\S]*\}/)
+      if (match) {
+        try {
+          parsedObj = JSON.parse(match[0])
+        } catch {
+          parsedObj = null
+        }
+      }
+    }
+    const parsed = parsedObj as { action?: string; question?: string }
     const question = parsed.question?.trim()
     if (!question || question.length < 8) return null
 

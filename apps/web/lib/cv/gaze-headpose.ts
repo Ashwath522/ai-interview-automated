@@ -51,6 +51,9 @@ export class GazeHeadPoseEstimator {
     }
     if (!this.faceLandmarker) {
       // Fallback stub: return a normal centered gaze
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('GazeHeadPoseEstimator using fallback stub (model not loaded)')
+      }
       const gazeX = (Math.random() - 0.5) * 0.1;
       const gazeY = (Math.random() - 0.5) * 0.1;
       return {

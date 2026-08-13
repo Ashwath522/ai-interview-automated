@@ -38,6 +38,9 @@ export class ObjectDetector {
     }
     if (!this.objectDetector) {
       // Fallback stub: always return person, occasional cell phone to simulate
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('ObjectDetector using fallback stub (model not loaded)')
+      }
       const results: DetectedObject[] = [
         { label: 'person', score: 0.9 + Math.random() * 0.1 }
       ];

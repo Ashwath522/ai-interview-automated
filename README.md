@@ -1,34 +1,63 @@
-# ai-interview
+# CoreLink AI Platform
 
-This is a [Next.js](https://nextjs.org) project bootstrapped with [v0](https://v0.app).
+CoreLink is an AI-powered interview platform with real-time proctoring and adaptive voice interviews.
 
-## Built with v0
+## Features
 
-This repository is linked to a [v0](https://v0.app) project. You can continue developing by visiting the link below -- start new chats to make changes, and v0 will push commits directly to this repo. Every merge to `main` will automatically deploy.
-
-[Continue working on v0 →](https://v0.app/chat/projects/prj_RnfATYPT1aU5eUA672zde43MNz76)
+- **Auth & Role Redirects**: Secure login with specialized dashboards for Admin, Recruiter, and Candidate roles.
+- **Flexible Job Setup**: Create jobs with AI-generated questions or custom question sets.
+- **Voice-First Interviews**: High-quality voice-only candidate answers with adaptive follow-ups powered by Nemotron/OpenRouter.
+- **Real-time Proctoring**: Multi-signal cheat detection (Face, Eyes, Body, Objects) with live risk scoring.
+- **Live Recruiter View**: Real-time monitor for active interviews with signal visualization and RED alerts for high-severity events.
+- **Evidence Management**: Detailed session history with high-severity snapshots and event timelines.
+- **Session Integrity**: Automated blocking of re-attendance after interview completion.
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
+
+- [pnpm](https://pnpm.io/) (v10 recommended)
+- PostgreSQL
+- Redis
+- OpenRouter API Key
+
+### Installation
+
+1. Clone the repository.
+2. Install dependencies:
+   ```bash
+   pnpm install
+   ```
+3. Set up environment variables:
+   ```bash
+   cp apps/web/.env.example apps/web/.env.local
+   # Edit apps/web/.env.local with your credentials
+   ```
+4. Initialize the database:
+   ```bash
+   cd apps/web
+   pnpm db:push
+   pnpm db:seed
+   ```
+
+### Running the App
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
 pnpm dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app will be available at [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Test Accounts
 
-## Learn More
+All accounts use the password: `password123`
 
-To learn more, take a look at the following resources:
+- **Recruiter**: `recruiter@corelink.test`
+- **Admin**: `admin@corelink.test`
+- **Candidates**: `candidate1@corelink.test`, `candidate2@corelink.test`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-- [v0 Documentation](https://v0.app/docs) - learn about v0 and how to use it.
-# ai-interview-automated
+## Project Structure
+
+- `apps/web`: Next.js frontend and API.
+- `infra`: Docker Compose for local infrastructure (PostgreSQL, Redis, MinIO).
+- `models`: Proctoring/AI model definitions.

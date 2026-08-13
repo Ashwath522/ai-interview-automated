@@ -68,6 +68,11 @@ export class LivenessAnalyzer {
       }
     }
 
+    if (process.env.NODE_ENV !== 'production') {
+      // show debug when liveness running; indicate whether landmarks are present
+      console.debug('LivenessAnalyzer running; landmarks available:', !!faceLandmarks)
+    }
+
     return analyzeLiveness(frame, faceLandmarks, this.blinkHistory, this.headMovementHistory);
   }
 

@@ -39,6 +39,9 @@ export class PoseDetector {
     }
     if (!this.poseLandmarker) {
       // Fallback stub: return simulated values
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('PoseDetector using fallback stub (model not loaded)')
+      }
       const personPresent = Math.random() > 0.02;
       const shouldersVisible = personPresent && (Math.random() > 0.1);
       const poseScore = personPresent ? (shouldersVisible ? 85 : 55) : 0;

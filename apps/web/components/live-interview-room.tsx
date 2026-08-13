@@ -125,6 +125,8 @@ export default function LiveInterviewRoom({
   const lightingAnalyzerRef = useRef<LightingAnalyzer | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const lastEmitRef = useRef<Map<string, number>>(new Map())
+  const lastLivePublishRef = useRef<number>(0)
+  const livePublishInFlightRef = useRef(false)
   // Sliding window for gaze and head pose samples (last 15 seconds)
   const gazeSamplesRef = useRef<Array<{gaze: GazeEstimate; headPose: HeadPose; timestamp: number}>>([])
   const headPoseSamplesRef = useRef<Array<{gaze: GazeEstimate; headPose: HeadPose; timestamp: number}>>([])
@@ -311,6 +313,159 @@ export default function LiveInterviewRoom({
     )
   }
 
+  const buildRedFlags = (
+    cv: CVStatus,
+    gazeHeadPoseResult: GazeHeadPoseResult | undefined,
+    poseResult: PoseResult | undefined,
+    lightingResult?: {
+      brightness: number;
+      contrast: number;
+      uniformity: number;
+      darkLighting: boolean;
+      goodLighting: boolean;
+    },
+    livenessResult?: {
+      eyeAspectRatio: number;
+      blinkRate: number;
+      headMovementScore: number;
+      textureAnalysisScore: number;
+      spoofSuspected: boolean;
+      livenessScore: number;
+    },
+  ): string[] => {
+    const flags: string[] = []
+
+    if (cv.faceCount === 0) flags.push('face_left_frame')
+    if (cv.faceCount > 1) flags.push('multiple_faces')
+    if (cv.objects.some((obj) => ['cell phone', 'phone', 'mobile phone'].includes(obj.toLowerCase()))) {
+      flags.push('phone_detected')
+    }
+    if (gazeHeadPoseResult?.gaze && !gazeHeadPoseResult.gaze.lookingAtScreen) {
+      flags.push('looking_away')
+    }
+    if (gazeHeadPoseResult?.headPose && Math.abs(gazeHeadPoseResult.headPose.yaw) > 35) {
+      flags.push('looking_behind')
+    }
+    if (poseResult?.personPresent === false) flags.push('person_absent')
+    if (poseResult?.shouldersVisible === false) flags.push('slouching_or_turned')
+    if (lightingResult?.darkLighting) flags.push('dark_lighting')
+    if (livenessResult?.spoofSuspected) flags.push('spoof_suspected')
+
+    return [...new Set(flags)]
+  }
+
+  const publishLiveSessionSnapshot = async (params: {
+    cvStatus: CVStatus
+    gazeHeadPoseResult: GazeHeadPoseResult | undefined
+    poseResult: PoseResult | undefined
+    lightingResult?: {
+      brightness: number;
+      contrast: number;
+      uniformity: number;
+      darkLighting: boolean;
+      goodLighting: boolean;
+    }
+    livenessResult?: {
+      eyeAspectRatio: number;
+      blinkRate: number;
+      headMovementScore: number;
+      textureAnalysisScore: number;
+      spoofSuspected: boolean;
+      livenessScore: number;
+    }
+    risk?: RiskOutput | null
+  }) => {
+    if (!sessionIdRef.current || livePublishInFlightRef.current) return
+
+    const now = Date.now()
+    if (now - lastLivePublishRef.current < 1500) return
+
+    livePublishInFlightRef.current = true
+    lastLivePublishRef.current = now
+
+    try {
+      const snapshotBlob = await takeSnapshot()
+      if (!snapshotBlob) return
+
+      const attentionScore = Math.max(
+        0,
+        Math.min(1, (
+          (params.gazeHeadPoseResult?.gaze?.lookingAtScreen ? 0.45 : 0.15) +
+          (params.poseResult?.personPresent ? 0.2 : 0) +
+          (params.poseResult?.shouldersVisible ? 0.15 : 0) +
+          (params.livenessResult?.livenessScore ?? 0.3) * 0.2
+        )),
+      )
+
+      const redFlags = buildRedFlags(
+        params.cvStatus,
+        params.gazeHeadPoseResult,
+        params.poseResult,
+        params.lightingResult,
+        params.livenessResult,
+      )
+
+      const payload = {
+        session_id: sessionIdRef.current,
+        interview_id: Number(interviewId),
+        candidate_name: candidateName,
+        job_title: jobTitle,
+        status: isBaselineCompleteRef.current
+          ? (redFlags.length > 0 || (params.risk?.level ?? 'low') === 'high' ? 'warning' : 'attending')
+          : 'baseline',
+        last_seen_at: new Date().toISOString(),
+        risk_score: params.risk?.score ?? null,
+        risk_level: params.risk?.level ?? 'low',
+        warning:
+          redFlags.length > 0 || (params.risk?.level ?? 'low') === 'high'
+            ? `Live warning: ${redFlags.slice(0, 3).join(', ')}`
+            : null,
+        signal_summary: {
+          faceDetected: params.cvStatus.faceDetected,
+          faceCount: params.cvStatus.faceCount,
+          eyeLookingAtScreen: params.gazeHeadPoseResult?.gaze?.lookingAtScreen ?? false,
+          gazeX: params.gazeHeadPoseResult?.gaze?.x ?? null,
+          gazeY: params.gazeHeadPoseResult?.gaze?.y ?? null,
+          headPitch: params.gazeHeadPoseResult?.headPose?.pitch ?? null,
+          headYaw: params.gazeHeadPoseResult?.headPose?.yaw ?? null,
+          headRoll: params.gazeHeadPoseResult?.headPose?.roll ?? null,
+          personPresent: params.poseResult?.personPresent ?? false,
+          shouldersVisible: params.poseResult?.shouldersVisible ?? false,
+          poseScore: params.poseResult?.poseScore ?? null,
+          attentionScore,
+          engagementScore: Math.max(
+            0,
+            Math.min(1, attentionScore * 0.85 + (params.livenessResult?.livenessScore ?? 0) * 0.15),
+          ),
+          darkLighting: params.lightingResult?.darkLighting ?? false,
+          goodLighting: params.lightingResult?.goodLighting ?? false,
+          brightness: params.lightingResult?.brightness ?? null,
+          contrast: params.lightingResult?.contrast ?? null,
+          uniformity: params.lightingResult?.uniformity ?? null,
+          livenessScore: params.livenessResult?.livenessScore ?? null,
+          spoofSuspected: params.livenessResult?.spoofSuspected ?? false,
+          landmarkDataAvailable: Boolean(params.gazeHeadPoseResult?.landmarks?.length),
+          objects: params.cvStatus.objects,
+          redFlags,
+          activeEventTypes: recentEventsRef.current.slice(-5).map((event) => event.type),
+        },
+      }
+
+      const formData = new FormData()
+      formData.append('payload', JSON.stringify(payload))
+      formData.append('snapshot', snapshotBlob, 'snapshot.jpg')
+
+      await fetch(`/api/proctoring/live/${encodeURIComponent(sessionIdRef.current)}`, {
+        method: 'POST',
+        body: formData,
+      })
+    } catch (err) {
+      console.error('Failed to publish live session snapshot', err)
+    } finally {
+      livePublishInFlightRef.current = false
+    }
+  }
+
   const BASELINE_DURATION_MS = 50000 // 50 seconds for baseline (can be 45-60s, we'll use 50s for simplicity)
   const BASELINE_SAMPLES_REQUIRED = 40 // we'll collect samples at 1fps, so 50 seconds -> 50 samples, but we'll require at least 40
   const PATTERN_WINDOW_SIZE = 15 // 15 seconds for pattern detection
@@ -460,12 +615,14 @@ export default function LiveInterviewRoom({
           // Process pose for baseline learning and pattern detection
           await processPose(poseResult, Date.now())
 
+          let latestRisk: RiskOutput | null = null
+
           // Proctoring events only after personal baseline is learned
           if (isBaselineCompleteRef.current) {
             await emitCVEvents(newCVStatus)
             await emitLightingEvents(lightingResult)
             await emitLivenessEvents(livenessResult)
-            await calculateAndSendRiskScore(
+            latestRisk = await calculateAndSendRiskScore(
               newCVStatus,
               gazeHeadPoseResult,
               poseResult,
@@ -473,6 +630,15 @@ export default function LiveInterviewRoom({
               livenessResult
             )
           }
+
+          await publishLiveSessionSnapshot({
+            cvStatus: newCVStatus,
+            gazeHeadPoseResult,
+            poseResult,
+            lightingResult,
+            livenessResult,
+            risk: latestRisk,
+          })
         }
       })
       frameSamplerRef.current = frameSampler
@@ -934,8 +1100,8 @@ export default function LiveInterviewRoom({
       spoofSuspected: boolean;
       livenessScore: number;
     }
-  ) => {
-    if (!sessionIdRef.current) return
+  ): Promise<RiskOutput | null> => {
+    if (!sessionIdRef.current) return null
 
     // Build current signals from latest detections
     const currentSignals = {
@@ -1009,6 +1175,8 @@ export default function LiveInterviewRoom({
     } catch (err) {
       console.error('Failed to send risk score', err)
     }
+
+    return risk
   }
 
   const endInterview = () => {
