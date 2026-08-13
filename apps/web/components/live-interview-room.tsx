@@ -582,10 +582,10 @@ export default function LiveInterviewRoom({
       // If any detector fell back to a lightweight stub, surface degraded mode
       try {
         const degradedDetectors: string[] = []
-        if (faceDetectorRef.current && (faceDetectorRef.current as any).usingFallback) degradedDetectors.push('faceDetector')
-        if (objectDetectorRef.current && (objectDetectorRef.current as any).usingFallback) degradedDetectors.push('objectDetector')
-        if (gazeHeadPoseEstimatorRef.current && (gazeHeadPoseEstimatorRef.current as any).usingFallback) degradedDetectors.push('gazeHeadPoseEstimator')
-        if (poseDetectorRef.current && (poseDetectorRef.current as any).usingFallback) degradedDetectors.push('poseDetector')
+        if (faceDetectorRef.current?.usingFallback) degradedDetectors.push('faceDetector')
+        if (objectDetectorRef.current?.usingFallback) degradedDetectors.push('objectDetector')
+        if (gazeHeadPoseEstimatorRef.current?.usingFallback) degradedDetectors.push('gazeHeadPoseEstimator')
+        if (poseDetectorRef.current?.usingFallback) degradedDetectors.push('poseDetector')
         if (degradedDetectors.length > 0) {
           setProctoringDegraded(true)
           // Log a proctoring_degraded_mode event so the backend and audit log capture this
@@ -596,7 +596,7 @@ export default function LiveInterviewRoom({
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ session_id: sessionIdRef.current, event_type: 'proctoring_degraded_mode', severity: 'low', timestamp: new Date().toISOString(), metadata: { detectors: degradedDetectors } }),
             }).catch(() => {})
-          } catch (e) {
+          } catch {
             // best-effort
           }
         }

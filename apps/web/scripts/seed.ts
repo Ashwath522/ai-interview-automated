@@ -245,7 +245,7 @@ async function main() {
       .limit(1)
 
     if (!existing.length) {
-      const pipelineResult = await db
+      await db
         .insert(pipeline)
         .values({
           userId: recruiterId,
