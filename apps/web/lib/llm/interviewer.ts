@@ -31,6 +31,48 @@ export function detectExitIntent(answer: string): boolean {
   return exitPatterns.some((pattern) => pattern.test(normalized))
 }
 
+export function detectNonSubstantiveAnswer(answer: string): boolean {
+  const normalized = answer.trim().toLowerCase()
+  if (!normalized) return true // empty answer is non-substantive
+  
+  // Single word or very short non-answers
+  const words = normalized.split(/\s+/).filter(Boolean)
+  if (words.length === 1 && words[0].length <= 3) return true // single short word like "idk", "no", "yes"
+  
+  // Explicit refusal patterns
+  const refusalPatterns = [
+    /^(idk|i\s*don'?t\s*know|i\s+have\s+no\s+idea|no\s+idea|not\s+sure|n\/a|skip|pass|next)$/,
+    /^(end\s+it|let'?s\s+end|quit|stop|done)$/,
+  ]
+  if (refusalPatterns.some((p) => p.test(normalized))) return true
+  
+  // Very short answers (under 15 characters) that aren't natural short responses
+  if (normalized.length < 15 && !/^(yes|no|i think|i don'?t|good|bad|okay|ok|sure)/.test(normalized)) {
+    return true
+  }
+  
+  return false
+}
+
+export function detectHostileLanguage(answer: string): boolean {
+  const normalized = answer.toLowerCase()
+  const hostilePatterns = [
+    // Profanity only
+    /\b(f[u\*]ck|shit|asshole)\b/,
+    // Direct attacks: "you/this/that is/are stupid/idiot/moron"
+    /\b(you|this|that)\s+(is|are|'s)\s+(an?\s+)?(stupid|idiot|moron)\b/,
+    // Explicit dismissal phrases
+    /\b(go to hell|eff you|you suck|this is a waste|waste of my time)\b/,
+  ]
+  return hostilePatterns.some((pattern) => pattern.test(normalized))
+}
+
+export function countRecentNonSubstantiveAnswers(priorQA: { question: string; answer: string }[], currentAnswer: string): number {
+  // Count how many of the last 3 answers (including current) are non-substantive
+  const recentAnswers = [...priorQA.slice(-2).map((qa) => qa.answer), currentAnswer]
+  return recentAnswers.filter((answer) => detectNonSubstantiveAnswer(answer)).length
+}
+
 export type DecideNextStepParams = {
   jobTitle: string
   jobDescription: string
@@ -229,14 +271,42 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     return { action: 'ended_by_candidate' }
   }
 
-  // Calculate story completeness for this answer (NEW: Bug 2 fix)
+  // NEW: Disengagement/quit detection (runs before completeness scoring)
+  if (detectHostileLanguage(params.candidateAnswer)) {
+    console.log('[engine decision: complete] (hostile language detected)')
+    return { action: 'complete' }
+  }
+
+  // NEW: Non-substantive answer detection
+  const isNonSubstantive = detectNonSubstantiveAnswer(params.candidateAnswer)
+  if (isNonSubstantive && !params.isFollowUpQuestion) {
+    const consecutiveNonSubstantive = countRecentNonSubstantiveAnswers(params.priorQA, params.candidateAnswer)
+    // If 3+ consecutive non-substantive answers (current + last 2), end interview early
+    if (consecutiveNonSubstantive >= 3) {
+      console.log('[engine decision: complete] (3+ consecutive non-substantive answers)')
+      return { action: 'complete' }
+    }
+    // Otherwise skip follow_up and move to next base question
+    if (isLastBase) {
+      return { action: 'complete' }
+    }
+    const nextIndex = params.baseQuestionIndex + 1
+    console.log('[engine decision: next_base] (non-substantive answer, skipping follow_up)')
+    return {
+      action: 'next_base',
+      question: params.baseQuestions[nextIndex],
+      nextBaseIndex: nextIndex,
+    }
+  }
+
+  // Calculate story completeness for this answer (existing Bug 2 fix)
   const completeness = calculateStoryCompleteness(params.candidateAnswer)
   const completenessScore = scoreCompleteness(completeness)
   
-  // Check for frustration or explicit closure signals (NEW: Bug 2 fix)
+  // Check for frustration or explicit closure signals (existing Bug 2 fix)
   const candidateSignaledDone = detectFrustrationOrClosure(params.candidateAnswer)
   
-  // Decision Priority Order (NEW: Bug 2 fix):
+  // Decision Priority Order (existing Bug 2 fix):
   // (a) candidateSignaledDone → force move on with brief acknowledgment
   if (candidateSignaledDone && !params.isFollowUpQuestion) {
     if (isLastBase) {
@@ -251,7 +321,7 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     }
   }
 
-  // (b) completeness >= 0.8 threshold → force move on (NEW: Bug 2 fix)
+  // (b) completeness >= 0.8 threshold → force move on (existing Bug 2 fix)
   const completenessThreshold = 0.8
   if (completenessScore >= completenessThreshold && !params.isFollowUpQuestion) {
     if (isLastBase) {
@@ -324,6 +394,8 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     }
   }
 
+  // NEW: Add warning when LLM call fails and fallback triggers
+  console.log(`[warning] LLM call failed, using heuristic decision — check API key/timeout`)
   console.log(`[engine decision: heuristic fallback] completeness: ${completenessScore.toFixed(2)}`)
   return heuristicNextStep(params, candidateStyle)
 }
