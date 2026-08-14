@@ -77,6 +77,7 @@ export async function chatCompletion(messages: ChatMessage[]): Promise<string | 
 
     const data = (await res.json()) as Record<string, unknown>
     const content = extractContent(data)
+    if (content) console.error('[OpenRouter] LLM call succeeded')
     return content || null
   } catch (error) {
     console.error('OpenRouter request error:', error instanceof Error ? error.message : error)

@@ -5,12 +5,30 @@ import {
   type CandidateStyle,
 } from '@/lib/candidate-style'
 
-export type InterviewStepAction = 'follow_up' | 'next_base' | 'complete'
+export type InterviewStepAction = 'follow_up' | 'next_base' | 'complete' | 'ended_by_candidate'
 
 export type InterviewStepResult = {
   action: InterviewStepAction
   question?: string
   nextBaseIndex?: number
+  weakAnswerFlag?: boolean
+}
+
+export function detectExitIntent(answer: string): boolean {
+  const normalized = answer.trim().toLowerCase()
+  if (!normalized) return false
+  const exitPatterns = [
+    /\b(let'?s|lets)\s+(end|stop|quit)\b/,
+    /\bi'?m\s+(done|finished)\b/,
+    /\bi\s+am\s+(done|finished)\b/,
+    /\bnot\s+interested\b/,
+    /\bwant\s+to\s+(end|stop|quit)\b/,
+    /\bend\s+(the\s+)?(interview|test|session)\b/,
+    /\bcan\s+we\s+(end|stop)\b/,
+    /\bi\s+(want|wish|need)\s+to\s+(leave|exit)\b/,
+    /\bstop\s+the\s+interview\b/,
+  ]
+  return exitPatterns.some((pattern) => pattern.test(normalized))
 }
 
 export type DecideNextStepParams = {
@@ -22,6 +40,91 @@ export type DecideNextStepParams = {
   currentQuestion: string
   candidateAnswer: string
   priorQA: { question: string; answer: string }[]
+  storyCompleteness?: StoryCompleteness
+  coveredCompetencies?: Set<string>
+}
+
+export type StoryCompleteness = {
+  problem: number // 0-1: did they articulate the problem/context?
+  action: number // 0-1: did they describe their approach/action?
+  metrics: number // 0-1: did they provide data/numbers?
+  outcome: number // 0-1: did they state the result/impact?
+  impact: number // 0-1: is business/user impact clear?
+  tradeoff: number // 0-1: did they mention constraints/tradeoffs?
+  validation: number // 0-1: how did they validate success?
+}
+
+export function calculateStoryCompleteness(answer: string): StoryCompleteness {
+  const normalized = answer.toLowerCase()
+  
+  // Check for each dimension using keyword patterns
+  const problem = /\b(problem|issue|challenge|situation|context|background|why|goal)\b/.test(normalized) ? 1 : 0
+  const action = /\b(approach|solution|method|built|designed|created|implemented|developed|decided|action)\b/.test(normalized) ? 1 : 0
+  const metrics = /(\d+%|\d+\s*(users|customers|requests|ms|seconds|hours|days|millions?|thousands?)|improvement|reduced|increased|doubled)/.test(normalized) ? 1 : 0
+  const outcome = /\b(result|outcome|delivered|shipped|launched|achieved|completed|finished|deployed)\b/.test(normalized) ? 1 : 0
+  const impact = /\b(impact|benefit|save|improve|increase|reduce|optimize|performance|efficiency|quality|value|revenue|growth)\b/.test(normalized) ? 1 : 0
+  const tradeoff = /\b(tradeoff|compromise|constraint|limitation|downside|risk|complexity|cost|versus|instead|but|however|choose)\b/.test(normalized) ? 1 : 0
+  const validation = /\b(validated|measured|tested|verified|monitored|tracked|feedback|metric|learned|analyzed)\b/.test(normalized) ? 1 : 0
+  
+  return { problem, action, metrics, outcome, impact, tradeoff, validation }
+}
+
+export function scoreCompleteness(completeness: StoryCompleteness): number {
+  // Weighted average: some dimensions are more critical
+  const weights = {
+    problem: 0.15,
+    action: 0.2,
+    metrics: 0.2,
+    outcome: 0.15,
+    impact: 0.15,
+    tradeoff: 0.1,
+    validation: 0.05,
+  }
+  return (
+    completeness.problem * weights.problem +
+    completeness.action * weights.action +
+    completeness.metrics * weights.metrics +
+    completeness.outcome * weights.outcome +
+    completeness.impact * weights.impact +
+    completeness.tradeoff * weights.tradeoff +
+    completeness.validation * weights.validation
+  )
+}
+
+export function detectFrustrationOrClosure(answer: string): boolean {
+  const normalized = answer.toLowerCase()
+  const frustrationPatterns = [
+    /\b(i'?ve\s+already\s+answered|already\s+told|covered\s+this|we'?\s*ve\s+covered)\b/i,
+    /\b(going\s+in\s+circles|same\s+question|asked\s+me\s+that|already\s+asked)\b/i,
+    /\b(i'?m\s+(done|finished|tired|frustrated)|let'?s\s+move\s+on|think\s+we'?re\s+good|that'?s\s+it)\b/i,
+    /\b(i\s+don'?t\s+want\s+to\s+repeat|not\s+going\s+to\s+repeat|stop\s+asking)\b/i,
+    /\b(enough|no\s+more|that'?s\s+all|nothing\s+else\s+to\s+add)\b/i,
+  ]
+  return frustrationPatterns.some((pattern) => pattern.test(normalized))
+}
+
+export function extractCompetenciesFromQuestion(question: string): string[] {
+  const normalized = question.toLowerCase()
+  const competencies: string[] = []
+  
+  const competencyKeywords = {
+    'analytics': /\b(analytic|data|metric|measurement|dashboard|query|sql|python|analysis)\b/,
+    'leadership': /\b(lead|team|delegate|mentor|direct|manage|motivat|culture|vision)\b/,
+    'communication': /\b(communicat|present|explain|stakeholder|persuad|pitch|discuss|document)\b/,
+    'prioritization': /\b(priorit|roadmap|triage|scope|deadline|resource|constraint)\b/,
+    'problem-solving': /\b(problem|troubleshoot|debug|solution|algorithm|complex)\b/,
+    'technical-depth': /\b(architecure|system|design|api|database|scale|performance|optimization)\b/,
+    'ownership': /\b(own|responsible|accountab|took\s+charge|drove|initiated)\b/,
+    'collaboration': /\b(collaborat|partner|cross-team|aligned|stakeholder|consensus)\b/,
+  }
+  
+  for (const [comp, pattern] of Object.entries(competencyKeywords)) {
+    if (pattern.test(normalized)) {
+      competencies.push(comp)
+    }
+  }
+  
+  return competencies.length > 0 ? competencies : ['general']
 }
 
 const SYSTEM_PROMPT = `You are a skilled human interviewer conducting a live spoken interview.
@@ -39,7 +142,8 @@ Rules:
 - Never mention scoring, proctoring, risk, or evaluation
 - Never repeat a prior question verbatim
 - Max one follow-up between base questions (caller enforces this)
-- Use follow_up only when the answer needs more depth (impact, metrics, tradeoffs, ownership)
+- Use follow_up ONLY if the answer lacks critical details: impact metrics, specific ownership, tradeoffs, or concrete examples
+- The storyCompletenessScore (0-1) is provided: high scores (>0.8) indicate the candidate has thoroughly covered the topic
 - For next_base, return the exact next base question text provided in the payload
 - Do not expose chain-of-thought or reasoning`
 
@@ -120,9 +224,26 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
   const nextBaseQuestion = params.baseQuestions[params.baseQuestionIndex + 1]
   const candidateStyle = analyzeCandidateStyle(params.priorQA)
 
-  if (params.isFollowUpQuestion) {
-    if (isLastBase) return { action: 'complete' }
+  // Immediate exit intent check: must be deterministic and never call the LLM
+  if (detectExitIntent(params.candidateAnswer)) {
+    return { action: 'ended_by_candidate' }
+  }
+
+  // Calculate story completeness for this answer (NEW: Bug 2 fix)
+  const completeness = calculateStoryCompleteness(params.candidateAnswer)
+  const completenessScore = scoreCompleteness(completeness)
+  
+  // Check for frustration or explicit closure signals (NEW: Bug 2 fix)
+  const candidateSignaledDone = detectFrustrationOrClosure(params.candidateAnswer)
+  
+  // Decision Priority Order (NEW: Bug 2 fix):
+  // (a) candidateSignaledDone → force move on with brief acknowledgment
+  if (candidateSignaledDone && !params.isFollowUpQuestion) {
+    if (isLastBase) {
+      return { action: 'complete' }
+    }
     const nextIndex = params.baseQuestionIndex + 1
+    console.log(`[engine decision: next_base] (candidate signaled closure) completeness: ${completenessScore.toFixed(2)}`)
     return {
       action: 'next_base',
       question: params.baseQuestions[nextIndex],
@@ -130,6 +251,35 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     }
   }
 
+  // (b) completeness >= 0.8 threshold → force move on (NEW: Bug 2 fix)
+  const completenessThreshold = 0.8
+  if (completenessScore >= completenessThreshold && !params.isFollowUpQuestion) {
+    if (isLastBase) {
+      return { action: 'complete' }
+    }
+    const nextIndex = params.baseQuestionIndex + 1
+    console.log(`[engine decision: next_base] (high completeness: ${completenessScore.toFixed(2)}) → next competency`)
+    return {
+      action: 'next_base',
+      question: params.baseQuestions[nextIndex],
+      nextBaseIndex: nextIndex,
+    }
+  }
+
+  if (params.isFollowUpQuestion) {
+    if (isLastBase) return { action: 'complete' }
+    const nextIndex = params.baseQuestionIndex + 1
+    const wordCount = params.candidateAnswer.trim().split(/\s+/).filter(Boolean).length
+    const isNonAnswer = /\b(i\s+don'?t\s+know|no\s+idea|not\s+sure|n\/a)\b/i.test(params.candidateAnswer)
+    return {
+      action: 'next_base',
+      question: params.baseQuestions[nextIndex],
+      nextBaseIndex: nextIndex,
+      weakAnswerFlag: wordCount < 8 || isNonAnswer,
+    }
+  }
+
+  // (c) Otherwise → LLM decides follow_up or next_base (with completeness context)
   const userPayload = {
     jobTitle: params.jobTitle,
     jobDescriptionExcerpt: params.jobDescription.slice(0, 800),
@@ -140,10 +290,12 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     styleGuidance: styleGuidance(candidateStyle),
     nextBaseQuestion: nextBaseQuestion ?? null,
     isLastBaseQuestion: isLastBase,
+    storyCompletenessScore: completenessScore,
+    storyCompletenessDetails: completeness,
     decisionGuide: {
       follow_up:
-        'Use when the answer lacks impact, metrics, ownership, or tradeoffs. Reference something specific the candidate said. Match candidateStyle.',
-      next_base: 'Use when the answer is sufficient. Set question to nextBaseQuestion exactly.',
+        'Use only if answer lacks critical details: impact metrics, ownership, tradeoffs, or specific example. Must be different from prior questions on same topic.',
+      next_base: 'Use if answer is sufficient with good coverage of problem/action/outcome/impact. Set question to nextBaseQuestion exactly.',
     },
   }
 
@@ -156,11 +308,13 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     const parsed = parseStepResponse(raw)
     if (parsed) {
       if (parsed.action === 'follow_up') {
+        console.log(`[engine decision: follow_up] completeness: ${completenessScore.toFixed(2)}`)
         return { action: 'follow_up', question: sanitizeQuestion(parsed.question ?? '') }
       }
       if (parsed.action === 'next_base') {
         if (isLastBase) return { action: 'complete' }
         const nextIndex = params.baseQuestionIndex + 1
+        console.log(`[engine decision: next_base] completeness: ${completenessScore.toFixed(2)}`)
         return {
           action: 'next_base',
           question: sanitizeQuestion(parsed.question ?? nextBaseQuestion ?? ''),
@@ -170,6 +324,7 @@ export async function decideNextInterviewStep(params: DecideNextStepParams): Pro
     }
   }
 
+  console.log(`[engine decision: heuristic fallback] completeness: ${completenessScore.toFixed(2)}`)
   return heuristicNextStep(params, candidateStyle)
 }
 

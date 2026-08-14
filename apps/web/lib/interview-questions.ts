@@ -106,20 +106,32 @@ function pickSkill(themes: string[], index: number, fallback: string): string {
   return themes[index] ?? themes[0] ?? fallback
 }
 
-function shorten(text: string, max = 100): string {
-  const clean = text.replace(/\s+/g, ' ').trim()
-  if (clean.length <= max) return clean
-  return `${clean.slice(0, max - 1).trim()}…`
+function shortenPhrase(text: string, maxWords = 6): string {
+  const clean = text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^(and|or|the|a|an)\s+/i, '')
+
+  const words = clean.split(/\s+/).slice(0, maxWords)
+  let result = words.join(' ')
+
+  result = result.replace(/[,:;–—-]+$/, '').trim()
+
+  if (result && !/^[A-Z]{2,}/.test(result)) {
+    result = result.charAt(0).toLowerCase() + result.slice(1)
+  }
+  return result
 }
 
 function spokenQuestion(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-function toGerundPhrase(text: string, max = 90): string {
-  const clean = shorten(text, max)
-  const [first, ...rest] = clean.split(/\s+/)
-  const verb = first?.toLowerCase() ?? ''
+function toGerundPhrase(text: string, maxWords = 6): string {
+  const short = shortenPhrase(text, maxWords)
+  const [first, ...rest] = short.split(/\s+/)
+  const verb = (first ?? '').toLowerCase()
+
   const gerunds: Record<string, string> = {
     own: 'owning',
     improve: 'improving',
@@ -136,20 +148,26 @@ function toGerundPhrase(text: string, max = 90): string {
     collaborate: 'collaborating',
     maintain: 'maintaining',
     scale: 'scaling',
+    present: 'presenting',
+    define: 'defining',
+    prioritize: 'prioritizing',
+    conduct: 'conducting',
+    work: 'working',
   }
+
   if (gerunds[verb]) {
-    return `${gerunds[verb]} ${rest.join(' ')}`
+    return `${gerunds[verb]} ${rest.join(' ')}`.trim()
   }
-  return clean.charAt(0).toLowerCase() + clean.slice(1)
+  return short
 }
 
 function responsibilityPhrase(text: string): string {
-  return toGerundPhrase(text, 90)
+  return toGerundPhrase(text, 6)
 }
 
 function responsibilityTopic(text: string): string {
-  const firstClause = text.split(/\s+and\s+/i)[0] ?? text
-  return toGerundPhrase(firstClause, 80)
+  const firstClause = text.split(/\s+(?:and|or|,)\s+/i)[0] ?? text
+  return toGerundPhrase(firstClause, 5)
 }
 
 export function generateAiQuestions(jobTitle: string, description: string): InterviewQuestion[] {
@@ -161,7 +179,7 @@ export function generateAiQuestions(jobTitle: string, description: string): Inte
   const skillC = pickSkill(jd.themes, 2, skillB)
   const respA = jd.responsibilities[0] ?? jd.requirements[0] ?? `key deliverables as a ${role}`
   const respB = jd.responsibilities[1] ?? jd.requirements[1] ?? jd.topRequirement
-  const topReq = shorten(jd.topRequirement, 110)
+  const topReq = shortenPhrase(jd.topRequirement, 110 / 4)
 
   const questions: InterviewQuestion[] = [
     {
@@ -174,7 +192,7 @@ export function generateAiQuestions(jobTitle: string, description: string): Inte
     },
     {
       question: spokenQuestion(
-        `Walk me through a project where you used ${skillA} in a way that directly supports ${responsibilityPhrase(respA)}.`,
+        `Walk me through a project where you used ${skillA} to support ${responsibilityTopic(respA)}.`,
       ),
       expectedPoints: [skillA, 'concrete example', respA],
     },
@@ -249,3 +267,7 @@ export function parseCustomQuestions(raw: string): InterviewQuestion[] {
       }
     })
 }
+function shorten(topRequirement: string, arg1: number) {
+  throw new Error("Function not implemented.")
+}
+

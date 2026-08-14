@@ -250,12 +250,47 @@ export default function LiveInterviewRoom({
       return
     }
 
+    if (step.action === 'ended_by_candidate') {
+      // Inform candidate, log event, then finalize interview
+      const endMessage = "Thanks for your time today — we've ended the interview early at your request."
+      setDisplayQuestion(endMessage)
+      try {
+        // Speak the message for the candidate
+        speakText(endMessage)
+      } catch (err) {
+        // ignore TTS errors
+      }
+
+      // Log informational proctoring event so recruiters see candidate-initiated end
+      try {
+        await fetchEvent({ type: 'interview_ended_by_candidate', severity: 'low', metadata: { answer: answerText } })
+      } catch (err) {
+        // non-blocking
+      }
+
+      // Give a short moment for the message to be presented
+      await new Promise((res) => setTimeout(res, 1200))
+
+      await completeInterview(Number(interviewId), updatedAnswers)
+      endInterview()
+      setIsSubmittingAnswer(false)
+      return
+    }
+
     if (step.action === 'follow_up' && step.question) {
       setIsFollowUp(true)
       setDisplayQuestion(step.question)
     } else if (step.action === 'next_base') {
       setIsFollowUp(false)
       const nextIndex = step.nextBaseIndex ?? baseIndex + 1
+      // If the engine flagged a weak answer, emit a low-severity weak_answer event for reviewers
+      if (step.weakAnswerFlag) {
+        try {
+          await fetchEvent({ type: 'weak_answer', severity: 'low', metadata: { question, answer: answerText } })
+        } catch (err) {
+          // non-blocking
+        }
+      }
       setBaseIndex(nextIndex)
       setDisplayQuestion(step.question ?? activeQuestions[nextIndex] ?? '')
     }
