@@ -64,6 +64,19 @@ async function requireRole(role: 'admin' | 'recruiter' | 'candidate') {
   return userId
 }
 
+async function requireRecruiterOrAdmin(): Promise<{ userId: string; isAdmin: boolean }> {
+  const userId = await getUserId()
+  const rows = await db
+    .select({ role: userRole.role })
+    .from(userRole)
+    .where(eq(userRole.userId, userId))
+    .limit(1)
+
+  const role = rows[0]?.role
+  if (role !== 'recruiter' && role !== 'admin') throw new Error('Forbidden')
+  return { userId, isAdmin: role === 'admin' }
+}
+
 async function recruiterOwnsJob(recruiterId: string, jobId: number) {
   const rows = await db
     .select({ id: job.id })
@@ -925,8 +938,31 @@ export async function getInterviewEvidenceSummary(interviewId: number): Promise<
   }[]
 } | null> {
   try {
-    const userId = await requireRole('recruiter')
-    if (!(await recruiterOwnsInterview(userId, interviewId))) return null
+    const { userId, isAdmin } = await requireRecruiterOrAdmin()
+
+    // Check interview access:
+    // - Admins can access any interview
+    // - Recruiters must be the interview's recruiterId OR the job's owning recruiter
+    if (!isAdmin) {
+      // Primary: interview.recruiterId matches current user
+      const directOwner = await recruiterOwnsInterview(userId, interviewId)
+      if (!directOwner) {
+        // Fallback: the current user owns the job this interview belongs to
+        const jobOwnerRows = await db
+          .select({ id: interview.id })
+          .from(interview)
+          .innerJoin(pipeline, eq(interview.pipelineId, pipeline.id))
+          .innerJoin(job, eq(pipeline.jobId, job.id))
+          .where(and(eq(interview.id, interviewId), eq(job.userId, userId)))
+          .limit(1)
+        if (jobOwnerRows.length === 0) {
+          console.warn(
+            `[getInterviewEvidenceSummary] Access denied: userId=${userId} has no ownership over interviewId=${interviewId}`,
+          )
+          return null
+        }
+      }
+    }
 
     const rows = await db
       .select({
@@ -950,7 +986,12 @@ export async function getInterviewEvidenceSummary(interviewId: number): Promise<
       .where(eq(interview.id, interviewId))
       .limit(1)
 
-    if (!rows.length) return null
+    if (!rows.length) {
+      console.warn(
+        `[getInterviewEvidenceSummary] No DB row for interviewId=${interviewId} (join may have failed)`,
+      )
+      return null
+    }
 
     const row = rows[0]
     const metadata = row.metadata as { answers?: { answer?: string }[] } | null
@@ -967,7 +1008,6 @@ export async function getInterviewEvidenceSummary(interviewId: number): Promise<
       interviewScore: row.interviewScore ?? null,
       transcriptSnippet: firstAnswer ?? row.feedback ?? null,
       events: getEventsForInterview(interviewId)
-        .filter((event) => event.severity === 'high')
         .map((event) => ({
           event_type: event.event_type,
           severity: event.severity,
@@ -1004,6 +1044,144 @@ export async function getRecruiterPipelineCandidates(): Promise<
     return rows
   } catch (error) {
     console.error('Failed to get pipeline candidates:', error)
+    return []
+  }
+}
+
+/**
+ * Get currently-active live sessions visible to the current user.
+ * Recruiters see only sessions for their own interviews (by recruiterId OR job ownership).
+ * Admins see all sessions.
+ * "Active" means last_seen_at within the last 60 seconds.
+ */
+export async function getActiveLiveSessions(): Promise<
+  {
+    sessionId: string
+    interviewId: number
+    candidateName: string
+    jobTitle: string
+    riskLevel: 'low' | 'medium' | 'high'
+    riskScore: number | null
+    startedAt: string
+    status: string
+  }[]
+> {
+  try {
+    const { userId, isAdmin } = await requireRecruiterOrAdmin()
+    const { listLiveSessions } = await import('@/lib/proctoring-store')
+    const cutoffMs = 60 * 1000 // 60 seconds
+    const now = Date.now()
+
+    const allSessions = listLiveSessions().filter((s) => {
+      const lastSeen = new Date(s.last_seen_at).getTime()
+      return now - lastSeen <= cutoffMs
+    })
+
+    let visibleSessions = allSessions
+
+    if (!isAdmin) {
+      // Fetch interview IDs that the recruiter is allowed to see
+      const jobsResult = await db
+        .select({ id: job.id })
+        .from(job)
+        .where(eq(job.userId, userId))
+
+      const jobIds = jobsResult.map((j) => j.id)
+
+      // Interviews where recruiterId matches OR job belongs to recruiter
+      const ownedInterviews = await db
+        .select({ id: interview.id })
+        .from(interview)
+        .innerJoin(pipeline, eq(interview.pipelineId, pipeline.id))
+        .where(
+          or(
+            eq(interview.recruiterId, userId),
+            jobIds.length > 0 ? inArray(pipeline.jobId, jobIds) : eq(interview.id, -1),
+          ),
+        )
+
+      const ownedIds = new Set(ownedInterviews.map((r) => r.id))
+      visibleSessions = allSessions.filter((s) => ownedIds.has(s.interview_id))
+    }
+
+    return visibleSessions.map((s) => ({
+      sessionId: s.session_id,
+      interviewId: s.interview_id,
+      candidateName: s.candidate_name,
+      jobTitle: s.job_title,
+      riskLevel: s.risk_level,
+      riskScore: s.risk_score,
+      startedAt: s.last_seen_at,
+      status: s.status,
+    }))
+  } catch (error) {
+    console.error('Failed to get active live sessions:', error)
+    return []
+  }
+}
+
+/**
+ * Admin-only: get all scheduled/active interviews across all recruiters for the pipeline overview.
+ */
+export async function getAdminScheduledInterviews(): Promise<
+  {
+    id: number
+    candidateName: string
+    jobTitle: string
+    recruiterEmail: string
+    company: string
+    scheduledAt: string
+    status: string
+    durationMinutes: number
+  }[]
+> {
+  try {
+    const userId = await getUserId()
+    const roleRows = await db
+      .select({ role: userRole.role })
+      .from(userRole)
+      .where(eq(userRole.userId, userId))
+      .limit(1)
+    if (roleRows[0]?.role !== 'admin') throw new Error('Forbidden')
+
+    const rows = await db
+      .select({
+        interviewId: interview.id,
+        candidateName: candidateProfile.fullName,
+        jobTitle: job.title,
+        recruiterEmail: user.email,
+        company: recruiterProfile.organizationName,
+        scheduledAt: interview.scheduledAt,
+        status: interview.status,
+        durationMinutes: interview.durationMinutes,
+      })
+      .from(interview)
+      .innerJoin(candidateProfile, eq(interview.userId, candidateProfile.userId))
+      .innerJoin(pipeline, eq(interview.pipelineId, pipeline.id))
+      .innerJoin(job, eq(pipeline.jobId, job.id))
+      .innerJoin(recruiterProfile, eq(job.userId, recruiterProfile.userId))
+      .innerJoin(user, eq(interview.recruiterId, user.id))
+      .where(
+        or(
+          eq(interview.status, 'scheduled'),
+          eq(interview.status, 'baseline'),
+          eq(interview.status, 'active'),
+        ),
+      )
+      .orderBy(interview.scheduledAt)
+
+    return rows.map((row) => ({
+      id: row.interviewId,
+      candidateName: row.candidateName ?? '',
+      jobTitle: row.jobTitle ?? '',
+      recruiterEmail: row.recruiterEmail ?? '',
+      company: row.company ?? '',
+      scheduledAt: row.scheduledAt ? new Date(row.scheduledAt).toISOString() : new Date().toISOString(),
+      status: row.status ?? 'scheduled',
+      durationMinutes: row.durationMinutes ?? 30,
+    }))
+  } catch (error) {
+    console.error('Failed to get admin scheduled interviews:', error)
     return []
   }
 }

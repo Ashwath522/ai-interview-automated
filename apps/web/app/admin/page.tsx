@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AlertTriangle, CheckCircle2, BarChart3, Activity, Users, Shield } from 'lucide-react'
-import { isAdmin as checkIsAdmin } from '@/app/actions/core'
+import { isAdmin as checkIsAdmin, getAdminScheduledInterviews } from '@/app/actions/core'
 
 type AdminStats = {
   active_interviews?: number
@@ -23,9 +23,21 @@ type RetentionSettings = {
   last_run_deleted_count?: number
 } | null
 
+type ScheduledInterview = {
+  id: number
+  candidateName: string
+  jobTitle: string
+  recruiterEmail: string
+  company: string
+  scheduledAt: string
+  status: string
+  durationMinutes: number
+}
+
 export default function AdminPage() {
   const [stats, setStats] = useState<AdminStats | null>(null)
   const [retentionSettings, setRetentionSettings] = useState<RetentionSettings>(null)
+  const [scheduledInterviews, setScheduledInterviews] = useState<ScheduledInterview[]>([])
   const [loading, setLoading] = useState(true)
   const [toasts, setToasts] = useState<
     { id: string; title: string; description: string; type: 'default' | 'destructive' | 'success' }[]
@@ -66,6 +78,10 @@ export default function AdminPage() {
           const retentionData = await retentionResponse.json()
           if (!isCancelled) setRetentionSettings(retentionData)
         }
+
+        // Load scheduled interviews for pipeline overview
+        const scheduled = await getAdminScheduledInterviews()
+        if (!isCancelled) setScheduledInterviews(scheduled)
       } catch (error) {
         if (!isCancelled) {
           console.error('Failed to load admin data:', error)
@@ -369,6 +385,62 @@ export default function AdminPage() {
               environment variables or admin settings.
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* Scheduled Interviews Pipeline */}
+      <Card>
+        <CardHeader className="pb-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-bold">Scheduled Interviews</h3>
+            <span className="text-sm text-muted-foreground">{scheduledInterviews.length} upcoming</span>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {scheduledInterviews.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No interviews currently scheduled or active.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="pb-2 pr-4">Candidate</th>
+                    <th className="pb-2 pr-4">Job</th>
+                    <th className="pb-2 pr-4">Company</th>
+                    <th className="pb-2 pr-4">Recruiter</th>
+                    <th className="pb-2 pr-4">Scheduled</th>
+                    <th className="pb-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {scheduledInterviews.map((iv) => (
+                    <tr key={iv.id} className="hover:bg-muted/40">
+                      <td className="py-2 pr-4 font-medium">{iv.candidateName}</td>
+                      <td className="py-2 pr-4 text-muted-foreground">{iv.jobTitle}</td>
+                      <td className="py-2 pr-4 text-muted-foreground">{iv.company}</td>
+                      <td className="py-2 pr-4 text-muted-foreground">{iv.recruiterEmail}</td>
+                      <td className="py-2 pr-4 text-muted-foreground">
+                        {new Date(iv.scheduledAt).toLocaleString()}
+                      </td>
+                      <td className="py-2">
+                        <span
+                          className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                            iv.status === 'active'
+                              ? 'bg-green-100 text-green-700'
+                              : iv.status === 'baseline'
+                                ? 'bg-blue-100 text-blue-700'
+                                : 'bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {iv.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -96,7 +96,10 @@ export default function LiveInterviewRoom({
   })
   const [isBaselineComplete, setIsBaselineComplete] = useState(false)
   const [proctoringDegraded, setProctoringDegraded] = useState(false)
+  const [tabSwitchWarning, setTabSwitchWarning] = useState(false)
   const isBaselineCompleteRef = useRef(false)
+  const tabSwitchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const tabSwitchActiveRef = useRef(false)
   const [baseIndex, setBaseIndex] = useState(0)
   const [isFollowUp, setIsFollowUp] = useState(false)
   const [displayQuestion, setDisplayQuestion] = useState('')
@@ -257,14 +260,14 @@ export default function LiveInterviewRoom({
       try {
         // Speak the message for the candidate
         speakText(endMessage)
-      } catch (err) {
+      } catch {
         // ignore TTS errors
       }
 
       // Log informational proctoring event so recruiters see candidate-initiated end
       try {
         await fetchEvent({ type: 'interview_ended_by_candidate', severity: 'low', metadata: { answer: answerText } })
-      } catch (err) {
+      } catch {
         // non-blocking
       }
 
@@ -287,7 +290,7 @@ export default function LiveInterviewRoom({
       if (step.weakAnswerFlag) {
         try {
           await fetchEvent({ type: 'weak_answer', severity: 'low', metadata: { question, answer: answerText } })
-        } catch (err) {
+        } catch {
           // non-blocking
         }
       }
@@ -583,6 +586,84 @@ export default function LiveInterviewRoom({
       }
     }
   }, [baselineData, isBaselineComplete, isRecording])
+
+  // Tab-switch / window-blur detection
+  useEffect(() => {
+    if (!isRecording) return
+
+    const TAB_SWITCH_DEBOUNCE_MS = 2000
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // Tab became hidden — start debounce timer
+        if (tabSwitchTimerRef.current) clearTimeout(tabSwitchTimerRef.current)
+        tabSwitchTimerRef.current = setTimeout(() => {
+          if (document.hidden) {
+            tabSwitchActiveRef.current = true
+            setTabSwitchWarning(true)
+            handleEventEmission({
+              type: 'tab_switched',
+              severity: 'medium',
+              metadata: { trigger: 'visibilitychange', hidden: true },
+            }).catch(() => {})
+          }
+        }, TAB_SWITCH_DEBOUNCE_MS)
+      } else {
+        // Tab came back — cancel timer and clear warning after a short delay
+        if (tabSwitchTimerRef.current) {
+          clearTimeout(tabSwitchTimerRef.current)
+          tabSwitchTimerRef.current = null
+        }
+        // Keep warning visible for 5 seconds after return so candidate sees it
+        setTimeout(() => {
+          tabSwitchActiveRef.current = false
+          setTabSwitchWarning(false)
+        }, 5000)
+      }
+    }
+
+    const handleWindowBlur = () => {
+      if (tabSwitchTimerRef.current) clearTimeout(tabSwitchTimerRef.current)
+      tabSwitchTimerRef.current = setTimeout(() => {
+        // Only fire if the tab is still visible (blur but not hidden = alt-tab to another app)
+        if (!document.hidden) {
+          tabSwitchActiveRef.current = true
+          setTabSwitchWarning(true)
+          handleEventEmission({
+            type: 'tab_switched',
+            severity: 'medium',
+            metadata: { trigger: 'window_blur' },
+          }).catch(() => {})
+          // Auto-clear after 5 seconds
+          setTimeout(() => {
+            tabSwitchActiveRef.current = false
+            setTabSwitchWarning(false)
+          }, 5000)
+        }
+      }, TAB_SWITCH_DEBOUNCE_MS)
+    }
+
+    const handleWindowFocus = () => {
+      if (tabSwitchTimerRef.current) {
+        clearTimeout(tabSwitchTimerRef.current)
+        tabSwitchTimerRef.current = null
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('blur', handleWindowBlur)
+    window.addEventListener('focus', handleWindowFocus)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('blur', handleWindowBlur)
+      window.removeEventListener('focus', handleWindowFocus)
+      if (tabSwitchTimerRef.current) {
+        clearTimeout(tabSwitchTimerRef.current)
+        tabSwitchTimerRef.current = null
+      }
+    }
+  }, [isRecording]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const startInterview = async () => {
     try {
@@ -1202,6 +1283,8 @@ export default function LiveInterviewRoom({
       ).includes('leaning_posture'),
       // Lighting: now integrated with real analysis from lighting analyzer
       darkLighting: lightingResult?.darkLighting ?? false,
+      // Tab switch: set from the ref so the risk engine sees it immediately
+      tabSwitched: tabSwitchActiveRef.current,
       // Negative signals (reduce risk when good)
       continuousFaceVisible: cvStatus.faceCount > 0,
       goodLighting: lightingResult?.goodLighting ?? false,
@@ -1448,6 +1531,16 @@ export default function LiveInterviewRoom({
                 <AlertTriangle className="size-4 text-yellow-800" />
                 <div>
                   <div className="font-medium">Proctoring is running in reduced mode due to a network issue — some checks may be limited.</div>
+                </div>
+              </div>
+            )}
+
+            {tabSwitchWarning && (
+              <div className="absolute inset-x-2 top-20 flex items-center gap-2 rounded-lg border-2 border-orange-400 bg-orange-50 px-3 py-3 text-sm text-orange-900 shadow-lg">
+                <AlertTriangle className="size-5 flex-shrink-0 text-orange-600" />
+                <div>
+                  <div className="font-semibold">Please stay on this tab during your interview.</div>
+                  <div className="text-xs mt-0.5">Switching tabs or windows has been detected and logged.</div>
                 </div>
               </div>
             )}

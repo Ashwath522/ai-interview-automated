@@ -14,7 +14,7 @@ export class FaceDetector {
     if (typeof window === 'undefined') return;
     try {
       // @ts-expect-error - MediaPipe is loaded dynamically from a CDN and the package exposes no local TS declarations.
-      const vision = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/+esm");
+      const vision = await import(/* turbopackIgnore: true */ "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/+esm");
       const filesetResolver = await vision.FilesetResolver.forVisionTasks(
         "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.8/wasm"
       );

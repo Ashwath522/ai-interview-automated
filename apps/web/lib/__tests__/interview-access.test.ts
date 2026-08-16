@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { canCandidateJoinInterview, joinBlockReason } from '../interview-access'
+import { canCandidateJoinInterview } from '../interview-access'
 
 describe('canCandidateJoinInterview', () => {
   it('allows join within window for scheduled interview', () => {

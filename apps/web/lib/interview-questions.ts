@@ -161,9 +161,6 @@ function toGerundPhrase(text: string, maxWords = 6): string {
   return short
 }
 
-function responsibilityPhrase(text: string): string {
-  return toGerundPhrase(text, 6)
-}
 
 function responsibilityTopic(text: string): string {
   const firstClause = text.split(/\s+(?:and|or|,)\s+/i)[0] ?? text
@@ -267,7 +264,3 @@ export function parseCustomQuestions(raw: string): InterviewQuestion[] {
       }
     })
 }
-function shorten(topRequirement: string, arg1: number) {
-  throw new Error("Function not implemented.")
-}
-
